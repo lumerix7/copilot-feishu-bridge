@@ -26,35 +26,33 @@ function extractArgText(toolName: string, args: Record<string, unknown> | undefi
   try { return JSON.stringify(args); } catch { return ""; }
 }
 
-// Build the tool start block shown while execution is in progress
-function buildToolStartBlock(event: Extract<SessionEvent, { type: 'tool.execution_start' }>): string {
+// Build a compact tool status block. Used for both the start (🛠️) and the
+// in-place update on complete (✅/❌).  Keeping the same compact structure for
+// both ensures the entry size barely changes on completion, which prevents
+// page-boundary shifts that would cause other blocks to visually "replace" it.
+function buildToolStatusBlock(
+  event: Extract<SessionEvent, { type: 'tool.execution_start' }>,
+  icon: string
+): string {
   const { toolName, mcpServerName, mcpToolName, arguments: args } = event.data;
   const displayName = mcpServerName ? `${mcpServerName}/${mcpToolName ?? toolName}` : toolName;
   const argText = extractArgText(toolName, args);
-  const lines = ["```text", `🛠️ ${displayName}`];
+  const lines = ["```text", `${icon} ${displayName}`];
   if (argText) lines.push(argText);
   lines.push("```");
   return lines.join("\n");
 }
 
-// Replace the start block with a completed block including full output.
-// Feishu pagination handles long output — no truncation.
-function buildToolCompleteBlock(
-  startEvent: Extract<SessionEvent, { type: 'tool.execution_start' }>,
+// Build a standalone output block for tool results. Appended as a NEW timeline
+// entry at the end so it always lands on the active page and never shifts
+// already-frozen pages.
+function buildToolOutputBlock(
   completeEvent: Extract<SessionEvent, { type: 'tool.execution_complete' }>
-): string {
-  const { toolName, mcpServerName, mcpToolName, arguments: args } = startEvent.data;
-  const { success, result } = completeEvent.data;
-  const displayName = mcpServerName ? `${mcpServerName}/${mcpToolName ?? toolName}` : toolName;
-  const icon = success ? "✅" : "❌";
-  const argText = extractArgText(toolName, args);
-  const lines = ["```text", `${icon} ${displayName}`];
-  if (argText) lines.push(argText);
-  // Prefer detailed content (full diffs etc.) over the truncated LLM-facing content
+): string | undefined {
+  const { result } = completeEvent.data;
   const output = (result?.detailedContent ?? result?.content ?? "").trim();
-  if (output) lines.push("→ " + output.replace(/\n/g, "\n   "));
-  lines.push("```");
-  return lines.join("\n");
+  if (!output) return undefined;
+  return ["```text", `→ ${output.replace(/\n/g, "\n   ")}`, "```"].join("\n");
 }
 
 // Render a session.info event if it's worth showing
@@ -64,9 +62,10 @@ function renderSessionInfo(event: Extract<SessionEvent, { type: 'session.info' }
   return ["```text", `ℹ️ ${message}`, "```"].join("\n");
 }
 
-// Render full reasoning content — pagination handles length
-function renderReasoning(event: Extract<SessionEvent, { type: 'assistant.reasoning' }>): string {
-  const text = event.data.content.trim().replace(/\n{3,}/g, "\n\n");
+// Render a reasoning block from accumulated raw text.
+// Used both for assistant.reasoning (full snapshot) and assistant.reasoning_delta (incremental).
+function renderReasoningBlock(rawText: string): string {
+  const text = rawText.trim().replace(/\n{3,}/g, "\n\n");
   return ["```text", `🧠 Thinking`, text, "```"].join("\n");
 }
 
@@ -143,8 +142,11 @@ export class AcpCopilotBackend implements CopilotBackend {
       let cancelled = false;
       const inlineBlocks = this.config.copilot.inlineBlocks;
       // Tool entries tracked by toolCallId for in-place complete-block update
-      const toolEntries = new Map<string, TimelineEntry>();
+      // Tool entries no longer needed for in-place updates — start blocks are permanent
       const toolStartEvents = new Map<string, Extract<SessionEvent, { type: 'tool.execution_start' }>>();
+      // Track reasoning entries by reasoningId so repeated/delta events update the same block
+      const reasoningEntries = new Map<string, TimelineEntry>();
+      const reasoningTexts = new Map<string, string>();
 
       const appendAgentDelta = (delta: string): void => {
         if (!currentAgentEntry) {
@@ -185,21 +187,46 @@ export class AcpCopilotBackend implements CopilotBackend {
         } else if (inlineBlocks !== "off") {
           if (event.type === 'tool.execution_start') {
             toolStartEvents.set(event.data.toolCallId, event);
-            const entry = addBlock(buildToolStartBlock(event));
-            toolEntries.set(event.data.toolCallId, entry);
+            addBlock(buildToolStatusBlock(event, "🛠️"));
             emitUpdate();
           } else if (event.type === 'tool.execution_complete') {
             const startEv = toolStartEvents.get(event.data.toolCallId);
-            const entry = toolEntries.get(event.data.toolCallId);
-            if (startEv !== undefined && entry !== undefined) {
-              entry.text = buildToolCompleteBlock(startEv, event);
+            const icon = event.data.success ? "✅" : "❌";
+            if (startEv !== undefined) {
+              // 🛠️ start block stays as-is; ✅/❌ complete block appended as a new entry after it
+              addBlock(buildToolStatusBlock(startEv, icon));
             } else {
-              const icon = event.data.success ? "✅" : "❌";
               addBlock(["```text", `${icon} tool done`, "```"].join("\n"));
             }
+            // Output appended as yet another new entry at the end
+            const outputBlock = buildToolOutputBlock(event);
+            if (outputBlock) addBlock(outputBlock);
             emitUpdate();
           } else if (event.type === 'assistant.reasoning') {
-            addBlock(renderReasoning(event));
+            // assistant.reasoning carries the COMPLETE text for this reasoning block.
+            // Reuse the same entry for repeated events with the same reasoningId.
+            const { reasoningId, content } = event.data;
+            reasoningTexts.set(reasoningId, content);
+            let entry = reasoningEntries.get(reasoningId);
+            if (!entry) {
+              entry = addBlock(renderReasoningBlock(content));
+              reasoningEntries.set(reasoningId, entry);
+            } else {
+              entry.text = renderReasoningBlock(content);
+            }
+            emitUpdate();
+          } else if (event.type === 'assistant.reasoning_delta') {
+            // Accumulate incremental reasoning deltas into the same entry.
+            const { reasoningId, deltaContent } = event.data;
+            const accumulated = (reasoningTexts.get(reasoningId) ?? "") + deltaContent;
+            reasoningTexts.set(reasoningId, accumulated);
+            let entry = reasoningEntries.get(reasoningId);
+            if (!entry) {
+              entry = addBlock(renderReasoningBlock(accumulated));
+              reasoningEntries.set(reasoningId, entry);
+            } else {
+              entry.text = renderReasoningBlock(accumulated);
+            }
             emitUpdate();
           } else if (event.type === 'session.info') {
             const block = renderSessionInfo(event);
