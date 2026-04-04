@@ -41,7 +41,6 @@ export interface AppConfig {
   };
   copilot: {
     copilotBin: string;
-    defaultModel: string;
     outputSoftLimit: number;
     runTimeoutMs: number;
     statusIntervalMs: number;
@@ -50,6 +49,7 @@ export interface AppConfig {
     sessionListMaxCount: number;
     resumeDefaultMessages: number;
     statusIncludeProject: boolean;
+    inlineBlocks: "off" | "compact" | "full";
   };
   project: {
     allowedRoots: string[];
@@ -84,11 +84,11 @@ interface JsonConfigShape {
   };
   copilot?: {
     copilotBin?: unknown;
-    defaultModel?: unknown;
     outputSoftLimit?: unknown;
     runTimeoutMs?: unknown;
     statusIntervalMs?: unknown;
     streamUpdateIntervalMs?: unknown;
+    inlineBlocks?: unknown;
   };
   session?: {
     listDefaultCount?: unknown;
@@ -232,12 +232,6 @@ export function loadConfig(): AppConfig {
         jsonConfig,
         ["copilot", "copilotBin"]
       ),
-      defaultModel: readTextSetting(
-        "COPILOT_DEFAULT_MODEL",
-        "gpt-4o",
-        jsonConfig,
-        ["copilot", "defaultModel"]
-      ),
       outputSoftLimit: readIntegerSetting(
         "COPILOT_OUTPUT_SOFT_LIMIT",
         100000,
@@ -292,6 +286,9 @@ export function loadConfig(): AppConfig {
         true,
         jsonConfig,
         ["status", "includeProject"]
+      ),
+      inlineBlocks: normalizeInlineBlocks(
+        readTextSetting("COPILOT_INLINE_BLOCKS", "compact", jsonConfig, ["copilot", "inlineBlocks"])
       )
     },
     project: {
@@ -310,6 +307,12 @@ export function loadConfig(): AppConfig {
     },
     storePath: readTextSetting("STORE_PATH", ".data/bindings.json", jsonConfig, ["paths", "storePath"])
   };
+}
+
+function normalizeInlineBlocks(value: string): AppConfig["copilot"]["inlineBlocks"] {
+  const v = value.trim().toLowerCase();
+  if (v === "off" || v === "full") return v;
+  return "compact";
 }
 
 function normalizeFeishuLoggerLevel(value: string): AppConfig["feishu"]["wsLoggerLevel"] {

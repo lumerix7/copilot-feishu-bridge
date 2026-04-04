@@ -14,9 +14,15 @@ import {
 
 const SDK_CLI_PATH = process.env.COPILOT_CLI_PATH || '/opt/node/lib/node_modules/@github/copilot/npm-loader.js';
 
+export interface SessionModelInfo {
+  model: string;
+  reasoningEffort?: string;
+}
+
 export class AcpClient {
   private client: CopilotClient | null = null;
   private sessions = new Map<string, CopilotSession>();
+  private sessionModelInfo = new Map<string, SessionModelInfo>();
 
   private getOrCreateClient(): CopilotClient {
     if (!this.client || this.client.getState() === 'error') {
@@ -33,11 +39,78 @@ export class AcpClient {
     return this.client;
   }
 
+  private attachModelTracking(session: CopilotSession): void {
+    session.on('session.model_change', (event) => {
+      this.sessionModelInfo.set(session.sessionId, {
+        model: event.data.newModel,
+        reasoningEffort: event.data.reasoningEffort,
+      });
+    });
+    session.on('assistant.usage', (event) => {
+      const current = this.sessionModelInfo.get(session.sessionId);
+      if (!current || current.model !== event.data.model || current.reasoningEffort !== event.data.reasoningEffort) {
+        this.sessionModelInfo.set(session.sessionId, {
+          model: event.data.model,
+          reasoningEffort: event.data.reasoningEffort,
+        });
+      }
+    });
+  }
+
+  private async seedModelInfoFromHistory(session: CopilotSession): Promise<void> {
+    if (this.sessionModelInfo.has(session.sessionId)) return;
+    try {
+      const messages = await session.getMessages();
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const event = messages[i];
+        if (event.type === 'assistant.usage') {
+          this.sessionModelInfo.set(session.sessionId, {
+            model: event.data.model,
+            reasoningEffort: event.data.reasoningEffort,
+          });
+          break;
+        }
+      }
+    } catch {
+      // history unavailable — model info will arrive on next turn
+    }
+  }
+
+  getSessionModelInfo(sessionId: string): SessionModelInfo | undefined {
+    return this.sessionModelInfo.get(sessionId);
+  }
+
+  async probeSessionModelInfo(sessionId: string, workingDirectory?: string): Promise<SessionModelInfo | undefined> {
+    if (this.sessionModelInfo.has(sessionId)) return this.sessionModelInfo.get(sessionId);
+    try {
+      const client = this.getOrCreateClient();
+      // Resume a temporary session just to read history — don't store in main cache
+      // so the next real turn resumes cleanly with its own workingDirectory.
+      const session = await client.resumeSession(sessionId, {
+        onPermissionRequest: approveAll,
+        workingDirectory,
+        disableResume: true,
+      });
+      const messages = await session.getMessages();
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const event = messages[i];
+        if (event.type === 'assistant.usage') {
+          this.sessionModelInfo.set(sessionId, { model: event.data.model, reasoningEffort: event.data.reasoningEffort });
+          break;
+        }
+      }
+      await session.disconnect().catch(() => {});
+    } catch {
+      // session may not exist or ACP unavailable
+    }
+    return this.sessionModelInfo.get(sessionId);
+  }
+
   async getOrResumeSession(
     sessionId: string,
     workingDirectory?: string,
-    model?: string,
     systemMessage?: string,
+    reasoningEffort?: "low" | "medium" | "high" | "xhigh",
   ): Promise<CopilotSession> {
     const existing = this.sessions.get(sessionId);
     if (existing) return existing;
@@ -46,29 +119,43 @@ export class AcpClient {
     const config: ResumeSessionConfig = {
       onPermissionRequest: approveAll,
       workingDirectory,
-      model,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(systemMessage ? { systemMessage: { mode: 'append' as const, content: systemMessage } } : {}),
     };
     const session = await client.resumeSession(sessionId, config);
     this.sessions.set(sessionId, session);
+    this.attachModelTracking(session);
+    void this.seedModelInfoFromHistory(session);
     return session;
   }
 
   async createSession(
     workingDirectory: string,
-    model?: string,
     systemMessage?: string,
+    reasoningEffort?: "low" | "medium" | "high" | "xhigh",
   ): Promise<CopilotSession> {
     const client = this.getOrCreateClient();
     const config: SessionConfig = {
       onPermissionRequest: approveAll,
       workingDirectory,
-      model,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(systemMessage ? { systemMessage: { mode: 'append' as const, content: systemMessage } } : {}),
     };
     const session = await client.createSession(config);
     this.sessions.set(session.sessionId, session);
+    this.attachModelTracking(session);
+    void this.seedModelInfoFromHistory(session);
     return session;
+  }
+
+  async setSessionModel(
+    sessionId: string,
+    model: string,
+    reasoningEffort?: "low" | "medium" | "high" | "xhigh",
+  ): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`Session not active: ${sessionId}`);
+    await session.setModel(model, reasoningEffort ? { reasoningEffort } : undefined);
   }
 
   async listSessions(filter?: SessionListFilter): Promise<SessionMetadata[]> {
@@ -116,8 +203,20 @@ export class AcpClient {
       const client = this.getOrCreateClient();
       session = await client.resumeSession(sessionId, { onPermissionRequest: approveAll });
       this.sessions.set(sessionId, session);
+      this.attachModelTracking(session);
     }
-    return session.getMessages();
+    const messages = await session.getMessages();
+    // seed model info from history while we have the messages
+    if (!this.sessionModelInfo.has(sessionId)) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const event = messages[i];
+        if (event.type === 'assistant.usage') {
+          this.sessionModelInfo.set(sessionId, { model: event.data.model, reasoningEffort: event.data.reasoningEffort });
+          break;
+        }
+      }
+    }
+    return messages;
   }
 
   removeSession(sessionId: string): void {

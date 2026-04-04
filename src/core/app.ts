@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { CopilotBackend, CopilotTurnOptions } from "../adapters/copilot/backend.js";
+import { CopilotBackend, CopilotTurnOptions, CopilotTurnResult } from "../adapters/copilot/backend.js";
 import type { ModelInfo, SessionEvent } from '@github/copilot-sdk';import { createCopilotBackend } from "../adapters/copilot/copilot-runtime.js";
 import { FeishuGateway } from "../adapters/feishu/feishu-gateway.js";
 import { AppConfig } from "../config/env.js";
@@ -95,6 +95,7 @@ export class App {
   private feishu?: FeishuGateway;
   private readonly activeRuns = new Map<string, ActiveRun>();
   private readonly conversationSystemPrompts = new Map<string, string>();
+  private readonly conversationReasoningEffort = new Map<string, "low" | "medium" | "high" | "xhigh">();
 
   constructor(private readonly config: AppConfig) {
     this.store = new BindingStore(path.resolve(this.config.storePath));
@@ -107,7 +108,7 @@ export class App {
       configPath: this.config.configPath,
       projectAllowedRoots: this.config.project.allowedRoots,
       defaultProject: this.config.project.defaultProject,
-      copilotDefaultModel: this.config.copilot.defaultModel
+      copilotDefaultModel: "(from ACP)"
     });
     this.feishu = new FeishuGateway(this.config.feishu);
     await this.feishu.start(
@@ -115,10 +116,11 @@ export class App {
         const parsedCommand = parseCommand(message);
         const command = parsedCommand && "args" in parsedCommand ? parsedCommand : undefined;
         const currentBinding = await this.store.get(conversationKeyFor(message));
+        const msgKey = conversationKeyFor(message);
         const commandName = command?.name || ("name" in (parsedCommand || {}) ? parsedCommand?.name : undefined);
         const messageTitle = this.titleForCommand(commandName, message.text);
         const messageTemplate = this.templateForCommand(commandName);
-        const messageFooter = this.footerForMessage(commandName, currentBinding);
+        const messageFooter = this.footerForMessage(commandName, msgKey, currentBinding);
         const includeRawMarkdown = this.shouldIncludeRawMarkdownForMessage(commandName);
         const formatForFeishu = (text: string): string =>
           commandName ? this.stripLeadingMarkdownHeading(text) : text;
@@ -159,8 +161,8 @@ export class App {
                   title: statusTitle,
                   template: messageTemplate,
                   footer: commandName
-                    ? this.footerForMessage(commandName, latestBinding)
-                    : this.footerForCopilotReply(latestBinding),
+                    ? this.footerForMessage(commandName, msgKey, latestBinding)
+                    : this.footerForCopilotReply(msgKey, latestBinding),
                   text: statusText,
                   replyToMessageId: message.messageId,
                   threadId: message.threadId,
@@ -193,7 +195,7 @@ export class App {
                 chatId: message.chatId,
                 title: messageTitle,
                 template: messageTemplate,
-                footer: this.footerForCopilotReply(latestBinding),
+                footer: this.footerForCopilotReply(msgKey, latestBinding),
                 text: snapshot,
                 includeRawMarkdown,
                 replyToMessageId: message.messageId,
@@ -250,8 +252,8 @@ export class App {
             const latestBinding =
               (await this.store.get(conversationKeyFor(message))) || currentBinding;
             const finalFooter = commandName
-              ? this.footerForMessage(commandName, latestBinding)
-              : this.footerForCopilotReply(latestBinding);
+              ? this.footerForMessage(commandName, msgKey, latestBinding)
+              : this.footerForCopilotReply(msgKey, latestBinding);
             const finalTemplate =
               commandName
                 ? this.templateForSeverity(messageTemplate, responseSeverity)
@@ -291,7 +293,7 @@ export class App {
               chatId: message.chatId,
               title: messageTitle || "Bridge Error",
               template: "red",
-              footer: this.buildIsoFooter(),
+              footer: this.buildFooter(msgKey, currentBinding),
               text: `bridge error: ${text}`,
               includeRawMarkdown: false,
               replyToMessageId: message.messageId,
@@ -343,7 +345,7 @@ export class App {
         "",
         "## Copilot",
         "",
-        "- `/model [--list|name|clear]` show, list, or change the Copilot model for this conversation",
+        "- `/model [--list [--no-hidden] | <name>] [--reasoning <level>]` show or change model / reasoning effort",
         "- `/system [clear|<text>]` show, set, or clear the system prompt for this conversation",
         "",
         "## Project",
@@ -448,7 +450,7 @@ export class App {
         "",
         `- **Copilot**: \`${copilotInfo?.status.version ?? "(unknown)"}\``,
         `- **Auth**: \`${copilotInfo?.auth.authType ?? "?"}\` (${copilotInfo?.auth.login ?? "unknown"})`,
-        `- **Model**: \`${existing?.model || this.config.copilot.defaultModel}\``,
+        `- **Model**: \`${(sessionId ? this.copilot.getSessionModelInfo(sessionId)?.model : undefined) ?? "(from ACP)"}\``,
         `- **Directory**: \`${project}\``,
         `- **Session**: \`${sessionId}\``,
         `- **Session Time**: ${this.formatAnyTimestamp(sessionMeta?.startTime?.toISOString())}`,
@@ -700,13 +702,14 @@ export class App {
         return "No session is currently bound. Use `/new`, `/resume`, or `/session list`.";
       }
       const sessionMeta = (await this.copilot.listSessions()).find((s) => s.sessionId === existing.copilotSessionId);
+      const sessionInfo = existing.copilotSessionId ? this.copilot.getSessionModelInfo(existing.copilotSessionId) : undefined;
       const project = existing.project || this.config.project.defaultProject;
       return [
         "# Current Session",
         "",
         `- **Session**: \`${existing.copilotSessionId}\``,
         `- **Project**: \`${project}\``,
-        ...(existing.model ? [`- **Model**: \`${existing.model}\``] : []),
+        ...(sessionInfo?.model ? [`- **Model**: \`${sessionInfo.model}\`${sessionInfo.reasoningEffort ? ` (effort: ${sessionInfo.reasoningEffort})` : ""}`] : []),
         `- **Time**: ${this.formatAnyTimestamp(sessionMeta?.startTime?.toISOString())}`,
         `- **Cwd**: \`${sessionMeta?.context?.cwd || "(unknown)"}\``,
         `- **About**: ${sessionMeta?.summary || "(no preview)"}`
@@ -734,7 +737,7 @@ export class App {
       }
       await sendEarlyUpdate(`Creating a new Copilot session for project \`${project}\`...`);
       const sessionId = await this.copilot.createSession(project, {
-        model: existing?.model || this.config.copilot.defaultModel
+        reasoningEffort: this.conversationReasoningEffort.get(key)
       });
       const nextBinding = this.makeBinding(key, sessionId, project, existing);
       await this.store.put(nextBinding);
@@ -742,8 +745,7 @@ export class App {
         "# New Session",
         "",
         `- **Session**: \`${sessionId}\``,
-        `- **Project**: \`${nextBinding.project}\``,
-        `- **Model**: \`${nextBinding.model || this.config.copilot.defaultModel}\``
+        `- **Project**: \`${nextBinding.project}\``
       ].join("\n");
     }
 
@@ -763,39 +765,64 @@ export class App {
     }
 
     if (command?.name === "model") {
+      const EFFORT_VALUES = ["low", "medium", "high", "xhigh"] as const;
+      type EffortLevel = typeof EFFORT_VALUES[number];
+      const isEffort = (v: string): v is EffortLevel => EFFORT_VALUES.includes(v as EffortLevel);
+
       const modelArgs = new ArgCursor(command.args);
       if (modelArgs.peek() === "-h" || modelArgs.peek() === "--help") {
         return this.modelHelpText();
       }
+
+      const noHidden = modelArgs.takeFlag("--no-hidden");
       if (modelArgs.peek() === "--list" || modelArgs.peek() === "list") {
         modelArgs.shift();
         await sendEarlyUpdate("Fetching Copilot model list...");
         const models = await this.copilot.listModels().catch(() => []);
-        return this.modelListText(models);
+        const filtered = noHidden
+          ? models.filter(m => m.policy?.state === "enabled")
+          : models;
+        return this.modelListText(filtered);
       }
-      const current = existing?.model || this.config.copilot.defaultModel;
-      if (modelArgs.isEmpty()) {
-        return `# Model\n\n- **Model**: \`${current}\``;
+
+      const reasoningArg = modelArgs.takeOption("--reasoning");
+      const sessionId = existing?.copilotSessionId;
+      const sessionInfo = sessionId ? this.copilot.getSessionModelInfo(sessionId) : undefined;
+      const currentModel = sessionInfo?.model ?? "(from ACP)";
+      const currentEffort = sessionInfo?.reasoningEffort || (reasoningArg === undefined ? this.conversationReasoningEffort.get(key) : undefined);
+
+      if (modelArgs.isEmpty() && reasoningArg === undefined) {
+        const effortLine = currentEffort ? `\n- **Effort**: \`${currentEffort}\`` : "";
+        return `# Model\n\n- **Model**: \`${currentModel}\`${effortLine}`;
       }
       if (activeRun) {
         return `Cannot change model while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
       }
-      const nextValue = modelArgs.remainingText();
-      const nextBinding = existing
-        ? {
-            ...existing,
-            model: ["clear", "default", "reset"].includes(nextValue.toLowerCase()) ? undefined : nextValue,
-            updatedAt: new Date().toISOString()
-          }
-        : this.makeBinding(
-            key,
-            undefined,
-            this.config.project.defaultProject,
-            { model: ["clear", "default", "reset"].includes(nextValue.toLowerCase()) ? undefined : nextValue }
-          );
-      await sendEarlyUpdate(`Switching model to \`${nextBinding.model || this.config.copilot.defaultModel}\`...`);
-      await this.store.put(nextBinding);
-      return `# Model\n\n- **Model**: \`${nextBinding.model || this.config.copilot.defaultModel}\``;
+
+      if (reasoningArg !== undefined) {
+        if (!isEffort(reasoningArg)) {
+          return `Invalid effort level \`${reasoningArg}\`. Valid: ${EFFORT_VALUES.join(", ")}.`;
+        }
+        this.conversationReasoningEffort.set(key, reasoningArg);
+      }
+
+      const nextEffort: EffortLevel | undefined = reasoningArg !== undefined && isEffort(reasoningArg)
+        ? reasoningArg
+        : (this.conversationReasoningEffort.get(key) as EffortLevel | undefined);
+
+      if (!modelArgs.isEmpty()) {
+        const nextModel = modelArgs.remainingText();
+        if (sessionId) {
+          await sendEarlyUpdate(`Switching model to \`${nextModel}\`${nextEffort ? ` (effort: ${nextEffort})` : ""}...`);
+          await this.copilot.setSessionModel(sessionId, nextModel, nextEffort);
+          const effortLine = nextEffort ? `\n- **Effort**: \`${nextEffort}\`` : "";
+          return `# Model\n\n- **Model**: \`${nextModel}\`${effortLine}`;
+        }
+        return `No active session — start a conversation first to change the model.`;
+      }
+
+      const effortLine = nextEffort ? `\n- **Effort**: \`${nextEffort}\`` : "";
+      return `# Model\n\n- **Model**: \`${currentModel}\`${effortLine}`;
     }
 
     if (command?.name === "project") {
@@ -961,7 +988,7 @@ export class App {
 
     try {
       const runOptions: CopilotTurnOptions = {
-        model: existing?.model || this.config.copilot.defaultModel,
+        reasoningEffort: this.conversationReasoningEffort.get(key),
         systemMessage: this.conversationSystemPrompts.get(key),
       };
 
@@ -982,7 +1009,27 @@ export class App {
         startedAt: new Date().toISOString(),
         status: "running"
       });
-      const result = await handle.done;
+
+      // Probe interval: send a "still running" status card periodically
+      const runStartedAt = Date.now();
+      const probeTarget = onStatus || onUpdate;
+      let probeTimer: ReturnType<typeof setInterval> | undefined;
+      if (probeTarget && this.config.copilot.statusIntervalMs > 0) {
+        probeTimer = setInterval(async () => {
+          const elapsed = Math.round((Date.now() - runStartedAt) / 1000);
+          const mins = Math.floor(elapsed / 60);
+          const secs = elapsed % 60;
+          const elapsedStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+          await probeTarget(`Running… (elapsed: ${elapsedStr})`).catch(() => {});
+        }, this.config.copilot.statusIntervalMs);
+      }
+
+      let result: CopilotTurnResult;
+      try {
+        result = await handle.done;
+      } finally {
+        if (probeTimer !== undefined) clearInterval(probeTimer);
+      }
 
       const nextBinding =
         existing && existing.copilotSessionId === result.sessionId
@@ -999,15 +1046,17 @@ export class App {
     if (!this.config.feishu.startupNotifyChatId) return;
     try {
       const binding = await this.store.get(`p2p:${this.config.feishu.startupNotifyChatId}`);
+      if (binding?.copilotSessionId) {
+        await this.copilot.probeSessionModelInfo(binding.copilotSessionId, binding.project).catch(() => {});
+      }
       const feishuDiagnostics = this.feishu?.diagnostics();
       const text = [
         `- **Backend**: \`acp\``,
         `- **Default Project**: \`${this.config.project.defaultProject}\``,
         ...(binding?.project ? [`- **Current Project**: \`${binding.project}\``] : []),
-        `- **Default Model**: \`${this.config.copilot.defaultModel}\``,
         ...(feishuDiagnostics ? [`- **Feishu**: ${this.formatFeishuStatusSummary(feishuDiagnostics)}`] : [])
       ].join("\n");
-      await this.feishu?.sendStartupReady(text, this.buildIsoFooter(), title, false);
+      await this.feishu?.sendStartupReady(text, this.buildFooter(undefined, binding), title, false);
       console.log(logLabel, { chatId: this.config.feishu.startupNotifyChatId });
     } catch (error) {
       console.error(`failed to send ${title.toLowerCase()} notification`, error);
@@ -1161,28 +1210,29 @@ export class App {
     return { heading, body };
   }
 
-  private footerForMessage(commandName: string | undefined, binding?: SessionBinding): string | undefined {
+  private footerForMessage(commandName: string | undefined, key: string, binding?: SessionBinding): string | undefined {
     if (!commandName) return undefined;
-    if (this.commandUsesCopilotFooter(commandName)) {
-      return `${this.buildIsoFooter()}  |  ${this.buildCopilotFooterSummary(binding, true)}`;
-    }
-    const project = binding?.project || this.config.project.defaultProject;
-    return `${this.buildIsoFooter()}  |  ${project}`;
+    return this.buildFooter(key, binding);
   }
 
-  private footerForCopilotReply(binding?: SessionBinding): string {
-    return `${this.buildIsoFooter()}  |  ${this.buildCopilotFooterSummary(binding, true)}`;
+  private footerForCopilotReply(key: string, binding?: SessionBinding): string {
+    return this.buildFooter(key, binding);
   }
 
-  private buildCopilotFooterSummary(binding?: SessionBinding, includeSession = false): string {
-    const model = binding?.model || this.config.copilot.defaultModel;
-    const session = includeSession ? binding?.copilotSessionId : undefined;
-    const shortSession = session ? session.slice(0, 8) : undefined;
-    return [`🤖 Copilot`, `model=${model}`, ...(shortSession ? [`session=${shortSession}`] : [])].join(" · ");
-  }
-
-  private commandUsesCopilotFooter(commandName: string): boolean {
-    return ["status", "session", "new", "resume"].includes(commandName);
+  private buildFooter(key: string | undefined, binding?: SessionBinding): string {
+    const sessionId = binding?.copilotSessionId;
+    const sessionInfo = sessionId ? this.copilot.getSessionModelInfo(sessionId) : undefined;
+    const explicitEffort = key ? this.conversationReasoningEffort.get(key) : undefined;
+    const model = sessionInfo?.model;
+    const effort = explicitEffort || sessionInfo?.reasoningEffort;
+    const project = binding?.project;
+    const parts: string[] = [
+      ...(model ? [effort ? `${model} ${effort}` : model] : []),
+      ...(project ? [project] : []),
+      ...(sessionId ? [sessionId] : []),
+      "full-access"
+    ];
+    return `${this.buildIsoFooter()}  |  ${parts.join(" · ")}`;
   }
 
   private shouldIncludeRawMarkdownForMessage(commandName?: string): boolean {
@@ -1221,7 +1271,6 @@ export class App {
       copilotSessionId,
       project,
       searchEnabled: defaults?.searchEnabled ?? this.config.project.defaultSearchEnabled,
-      model: defaults?.model,
       createdAt: defaults?.createdAt || now,
       updatedAt: now
     };
@@ -1868,12 +1917,18 @@ export class App {
     return [
       "# Model",
       "",
-      "Show or change the Copilot model override for this conversation.",
+      "Show or change the Copilot model and reasoning effort for this conversation.",
       "",
       "## Usage",
       "",
-      "- `/model [--list|name|clear]`",
-      "- `/model -h|--help`"
+      "- `/model [--list [--no-hidden] | <name>] [--reasoning <level>]`",
+      "- `/model -h|--help`",
+      "",
+      "## Effort Levels",
+      "",
+      "- `low`, `medium`, `high`, `xhigh`",
+      "",
+      "Effort is not persisted — resets on bridge restart (defaults to Copilot config)."
     ].join("\n");
   }
 
@@ -1928,16 +1983,14 @@ export class App {
       return [
         ...lines,
         "",
-        "- Use `/model <name>` to set one for future turns.",
-        "- Use `/model clear` to remove the override."
+        "- Use `/model <name>` to switch for this session."
       ].join("\n");
     }
     return [
       "# Model List",
       "",
       "- Live model list unavailable.",
-      "- Use `/model <name>` to set one for future turns.",
-      "- Use `/model clear` to remove the override."
+      "- Use `/model <name>` to switch for this session."
     ].join("\n");
   }
 }

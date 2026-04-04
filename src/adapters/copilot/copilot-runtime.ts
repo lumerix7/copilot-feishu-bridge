@@ -4,6 +4,47 @@ import type { CopilotBackend, CopilotInfo, CopilotRunHandle, CopilotRunHooks, Co
 import type { IncomingMessage } from '../../types/domain.js';
 import type { SessionMetadata, CopilotSession, SessionEvent, ModelInfo } from '@github/copilot-sdk';
 import type { AppConfig } from '../../config/env.js';
+import type { SessionModelInfo } from './acp-client.js';
+
+// Render a tool execution_start event as a compact ```text block
+function renderToolStart(event: Extract<SessionEvent, { type: 'tool.execution_start' }>): string {
+  const { toolName, mcpServerName, mcpToolName } = event.data;
+  const displayName = mcpServerName ? `${mcpServerName}/${mcpToolName ?? toolName}` : toolName;
+  return ["```text", `🛠️ Tool: ${displayName}`, "```"].join("\n");
+}
+
+// Render a tool execution_complete event as a compact ```text block
+function renderToolComplete(event: Extract<SessionEvent, { type: 'tool.execution_complete' }>, mode: "compact" | "full"): string {
+  const { toolCallId, success, result } = event.data;
+  const icon = success ? "✅" : "❌";
+  const id = toolCallId.slice(0, 8);
+  if (mode === "full" && result?.detailedContent) {
+    const detail = result.detailedContent.slice(0, 800).trim();
+    return ["```text", `${icon} Tool done (${id})`, detail ? `output: ${detail}` : "", "```"].filter(l => l !== "").join("\n");
+  }
+  return ["```text", `${icon} Tool done (${id})`, "```"].join("\n");
+}
+
+// Render a session.info event if it's worth showing
+function renderSessionInfo(event: Extract<SessionEvent, { type: 'session.info' }>): string | undefined {
+  const { infoType, message } = event.data;
+  // Skip noisy low-value categories
+  if (["timing", "context_window", "snapshot"].includes(infoType)) return undefined;
+  return ["```text", `ℹ️ ${message}`, "```"].join("\n");
+}
+
+// Render assistant reasoning as a collapsible-style block
+function renderReasoning(event: Extract<SessionEvent, { type: 'assistant.reasoning' }>): string {
+  const preview = event.data.content.slice(0, 300).replace(/\n+/g, " ").trim();
+  return ["```text", `🧠 Thinking: ${preview}${event.data.content.length > 300 ? "…" : ""}`, "```"].join("\n");
+}
+
+// Build the full streamed output: event blocks + assistant text
+function buildTimelineText(blocks: string[], assistantText: string): string {
+  const parts = [...blocks];
+  if (assistantText) parts.push(assistantText);
+  return parts.join("\n\n");
+}
 
 export class AcpCopilotBackend implements CopilotBackend {
   readonly mode = 'acp' as const;
@@ -13,7 +54,7 @@ export class AcpCopilotBackend implements CopilotBackend {
   constructor(private readonly config: AppConfig) {}
 
   async createSession(project: string, options?: CopilotTurnOptions): Promise<string> {
-    const session = await this.acpClient.createSession(project, options?.model, options?.systemMessage);
+    const session = await this.acpClient.createSession(project, options?.systemMessage, options?.reasoningEffort);
     return session.sessionId;
   }
 
@@ -35,26 +76,45 @@ export class AcpCopilotBackend implements CopilotBackend {
           session = await this.acpClient.getOrResumeSession(
             sessionId,
             project,
-            options?.model,
             options?.systemMessage,
+            options?.reasoningEffort,
           );
           resolvedSessionId = sessionId;
         } catch {
-          session = await this.acpClient.createSession(project, options?.model, options?.systemMessage);
+          session = await this.acpClient.createSession(project, options?.systemMessage, options?.reasoningEffort);
           resolvedSessionId = session.sessionId;
         }
       } else {
-        session = await this.acpClient.createSession(project, options?.model, options?.systemMessage);
+        session = await this.acpClient.createSession(project, options?.systemMessage, options?.reasoningEffort);
         resolvedSessionId = session.sessionId;
       }
 
       let accumulated = '';
       let cancelled = false;
+      const eventBlocks: string[] = [];
+      const inlineBlocks = this.config.copilot.inlineBlocks;
 
       const unsubscribe = session.on((event: SessionEvent) => {
         if (event.type === 'assistant.message_delta') {
           accumulated += event.data.deltaContent;
-          hooks?.onUpdate?.(accumulated);
+          hooks?.onUpdate?.(buildTimelineText(eventBlocks, accumulated));
+        } else if (inlineBlocks !== "off") {
+          if (event.type === 'tool.execution_start') {
+            eventBlocks.push(renderToolStart(event));
+            hooks?.onUpdate?.(buildTimelineText(eventBlocks, accumulated));
+          } else if (event.type === 'tool.execution_complete') {
+            eventBlocks.push(renderToolComplete(event, inlineBlocks));
+            hooks?.onUpdate?.(buildTimelineText(eventBlocks, accumulated));
+          } else if (event.type === 'assistant.reasoning') {
+            eventBlocks.push(renderReasoning(event));
+            hooks?.onUpdate?.(buildTimelineText(eventBlocks, accumulated));
+          } else if (event.type === 'session.info') {
+            const block = renderSessionInfo(event);
+            if (block) {
+              eventBlocks.push(block);
+              hooks?.onUpdate?.(buildTimelineText(eventBlocks, accumulated));
+            }
+          }
         }
       });
 
@@ -68,7 +128,7 @@ export class AcpCopilotBackend implements CopilotBackend {
           { prompt: input.text },
           this.config.copilot.runTimeoutMs || 600_000
         );
-        const finalOutput = result?.data?.content ?? accumulated;
+        const finalOutput = buildTimelineText(eventBlocks, result?.data?.content ?? accumulated);
         return {
           runId,
           sessionId: resolvedSessionId,
@@ -141,6 +201,18 @@ export class AcpCopilotBackend implements CopilotBackend {
     } catch {
       return [];
     }
+  }
+
+  getSessionModelInfo(sessionId: string): SessionModelInfo | undefined {
+    return this.acpClient.getSessionModelInfo(sessionId);
+  }
+
+  async probeSessionModelInfo(sessionId: string, workingDirectory?: string): Promise<SessionModelInfo | undefined> {
+    return this.acpClient.probeSessionModelInfo(sessionId, workingDirectory);
+  }
+
+  async setSessionModel(sessionId: string, model: string, reasoningEffort?: "low" | "medium" | "high" | "xhigh"): Promise<void> {
+    await this.acpClient.setSessionModel(sessionId, model, reasoningEffort);
   }
 
   async shutdown(): Promise<void> {

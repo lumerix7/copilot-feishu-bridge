@@ -1,5 +1,6 @@
 import type { SessionMetadata, SessionEvent, ModelInfo, GetStatusResponse, GetAuthStatusResponse } from '@github/copilot-sdk';
 import { IncomingMessage } from "../../types/domain.js";
+import type { SessionModelInfo } from "./acp-client.js";
 
 export interface CopilotTurnResult {
   runId: string;
@@ -19,7 +20,7 @@ export interface CopilotRunHooks {
 }
 
 export interface CopilotTurnOptions {
-  model?: string;
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh";
   systemMessage?: string;
 }
 
@@ -44,4 +45,7 @@ export interface CopilotBackend {
   listModels(): Promise<ModelInfo[]>;
   getCopilotInfo(): Promise<CopilotInfo>;
   getSessionMessages(sessionId: string): Promise<SessionEvent[]>;
+  getSessionModelInfo(sessionId: string): SessionModelInfo | undefined;
+  probeSessionModelInfo(sessionId: string, workingDirectory?: string): Promise<SessionModelInfo | undefined>;
+  setSessionModel(sessionId: string, model: string, reasoningEffort?: "low" | "medium" | "high" | "xhigh"): Promise<void>;
 }

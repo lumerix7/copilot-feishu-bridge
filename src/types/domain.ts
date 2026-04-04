@@ -6,7 +6,6 @@ export interface SessionBinding {
   copilotSessionId?: CopilotSessionId;
   project: string;
   searchEnabled?: boolean;
-  model?: string;
   createdAt: string;
   updatedAt: string;
 }
