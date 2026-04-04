@@ -40,6 +40,7 @@ export interface CopilotBackend {
     hooks?: CopilotRunHooks
   ): Promise<CopilotRunHandle>;
   stop(runId: string): Promise<boolean>;
+  compact(sessionId: string): Promise<{ success: boolean; tokensRemoved: number; messagesRemoved: number }>;
   getSession(sessionId: string): Promise<string | undefined>;
   listSessions(project?: string, options?: { limit?: number }): Promise<SessionMetadata[]>;
   listModels(): Promise<ModelInfo[]>;

@@ -7,6 +7,7 @@ export type CommandName =
   | "session"
   | "resume"
   | "stop"
+  | "compact"
   | "model"
   | "system"
   | "project"
@@ -119,6 +120,7 @@ export function parseCommand(message: IncomingMessage): ParsedCommand | ParsedCo
       "session",
       "resume",
       "stop",
+      "compact",
       "model",
       "system",
       "project",

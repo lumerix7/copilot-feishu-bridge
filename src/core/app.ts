@@ -341,6 +341,7 @@ export class App {
         "- `/new [-C <dir>] [-h|--help]` create and bind a fresh Copilot session",
         "- `/session [list [-n <count>] [--all] [--project <path>]] [-h|--help]` show the current session or browse recent sessions",
         "- `/resume [<session-id>|--last|-n <index>|--list] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session",
+        "- `/compact` compact the current bound Copilot session",
         "- `/stop` stop the current active run",
         "",
         "## Copilot",
@@ -764,6 +765,36 @@ export class App {
         : "Run already finished before stop completed.";
     }
 
+    if (command?.name === "compact") {
+      if (command.args[0] === "-h" || command.args[0] === "--help") {
+        return this.compactHelpText();
+      }
+      if (command.args.length > 0) {
+        return this.renderCommandError("Compact", `Unknown argument: \`${command.args[0]}\``, "`/compact [-h|--help]`");
+      }
+      const sessionId = existing?.copilotSessionId;
+      if (!sessionId) {
+        return "No session is currently bound. Use `/new` or `/resume` first.";
+      }
+      if (activeRun) {
+        return `Cannot compact while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
+      }
+      await sendEarlyUpdate(`Compacting session \`${sessionId}\`...`);
+      try {
+        const result = await this.copilot.compact(sessionId);
+        return [
+          "# Compact",
+          "",
+          `- **Session**: \`${sessionId}\``,
+          `- **Success**: \`${result.success}\``,
+          `- **Tokens removed**: \`${result.tokensRemoved}\``,
+          `- **Messages removed**: \`${result.messagesRemoved}\``,
+        ].join("\n");
+      } catch (err) {
+        return this.renderCommandError("Compact", err instanceof Error ? err.message : String(err), "`/compact`");
+      }
+    }
+
     if (command?.name === "model") {
       const EFFORT_VALUES = ["low", "medium", "high", "xhigh"] as const;
       type EffortLevel = typeof EFFORT_VALUES[number];
@@ -1081,6 +1112,7 @@ export class App {
       case "session": return "Session";
       case "resume": return "Resume Session";
       case "stop": return "Stop";
+      case "compact": return "Compact";
       case "model": return "Model";
       case "system": return "System";
       case "project": return "Project";
@@ -1120,6 +1152,7 @@ export class App {
       case "session": return "🧭";
       case "resume": return "↩️";
       case "stop": return "⏹️";
+      case "compact": return "🗜️";
       case "model": return "🤖";
       case "system": return "⚙️";
       case "project": return "📁";
@@ -1173,6 +1206,7 @@ export class App {
       case "new":
       case "resume":
       case "stop":
+      case "compact":
       case "git":
       case "cat":
       case "cp":
@@ -1939,6 +1973,19 @@ export class App {
       "",
       "- `/stop`",
       "- `/stop -h|--help`"
+    ].join("\n");
+  }
+
+  private compactHelpText(): string {
+    return [
+      "# Compact",
+      "",
+      "Compact the current bound Copilot session to reduce token usage.",
+      "",
+      "## Usage",
+      "",
+      "- `/compact`",
+      "- `/compact -h|--help`"
     ].join("\n");
   }
 

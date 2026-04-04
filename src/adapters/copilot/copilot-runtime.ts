@@ -300,6 +300,10 @@ export class AcpCopilotBackend implements CopilotBackend {
     return { runId, done };
   }
 
+  async compact(sessionId: string): Promise<{ success: boolean; tokensRemoved: number; messagesRemoved: number }> {
+    return this.acpClient.compactSession(sessionId);
+  }
+
   async stop(runId: string): Promise<boolean> {
     const abort = this.activeRuns.get(runId);
     if (abort) {

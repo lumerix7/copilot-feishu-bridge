@@ -85,6 +85,7 @@ All commands are slash commands in a Feishu DM to the bot.
 - `/new [-C <dir>] [-h|--help]` create and bind a fresh Copilot session
 - `/session [list [-n <count>] [--all] [--project <path>]] [-h|--help]` show the current session or browse recent sessions
 - `/resume [<session-id>|--last|-n <index>|--list] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session
+- `/compact` compact the current bound Copilot session
 - `/stop` stop the current active run
 
 ### Copilot
@@ -93,11 +94,13 @@ All commands are slash commands in a Feishu DM to the bot.
 - `/system [clear|<text>]` show, set, or clear the system prompt for this conversation
 
 ### Project
+
 - `/project [list|bind [<path>|-n <index>|-m]|unbind <path>] [-h|--help]` show the current project or manage project bindings
 - `/git [args...]` run `git` directly in the current bound project
 - `/cat`, `/cp`, `/find`, `/head`, `/ln`, `/ls`, `/mkdir`, `/mv`, `/pwd`, `/readlink`, `/rg`, `/rmdir`, `/sha256sum`, `/tail`, `/tar`, `/touch`, `/trash`, `/trash-list`, `/trash-restore`, `/tree`, `/wc` run local project commands
 
 ### Diagnostics
+
 - `/feishu [ws|send|doctor]` show Feishu websocket and outbound send diagnostics
 - `/log [-n <count>]` show recent bridge service logs from systemd journal
 

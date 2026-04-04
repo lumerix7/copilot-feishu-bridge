@@ -233,6 +233,17 @@ export class AcpClient {
     this.sessions.delete(sessionId);
   }
 
+  async compactSession(sessionId: string): Promise<{ success: boolean; tokensRemoved: number; messagesRemoved: number }> {
+    let session = this.sessions.get(sessionId);
+    if (!session) {
+      const client = this.getOrCreateClient();
+      session = await client.resumeSession(sessionId, { onPermissionRequest: approveAll });
+      this.sessions.set(sessionId, session);
+      this.attachModelTracking(session);
+    }
+    return session.rpc.compaction.compact();
+  }
+
   async shutdown(): Promise<void> {
     if (this.client) {
       await this.client.stop().catch(() => {});
