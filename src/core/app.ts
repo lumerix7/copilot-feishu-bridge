@@ -337,7 +337,7 @@ export class App {
         "- `/help` show commands",
         "- `/status [check-update] [-h|--help]` show current session and run state; `check-update` checks npm versions",
         "- `/new [-C <dir>]` create and bind a fresh Copilot session",
-        "- `/session [list [-n <count>] [--all] [--project <path>]]` show the current session or browse recent sessions",
+        "- `/session [list [-n <count>] [--all] [--project <path>]] [-h|--help]` show the current session or browse recent sessions",
         "- `/resume [<session-id>|-n <index>]` resume a session",
         "- `/stop` stop the current active run",
         "",
