@@ -71,10 +71,12 @@ function renderReasoning(event: Extract<SessionEvent, { type: 'assistant.reasoni
 }
 
 // Build the full streamed output: event blocks then assistant text
-function buildTimelineText(blocks: string[], assistantText: string): string {
-  const parts = [...blocks];
-  if (assistantText) parts.push(assistantText);
-  return parts.join("\n\n");
+// Ordered timeline of mutable entries — text and blocks interleaved in arrival order.
+// Entries are updated in place; new entries always append at end so page splits stay stable.
+type TimelineEntry = { text: string };
+
+function buildTimelineText(timeline: TimelineEntry[]): string {
+  return timeline.map(e => e.text.trim()).filter(Boolean).join('\n\n');
 }
 
 export class AcpCopilotBackend implements CopilotBackend {
@@ -134,18 +136,35 @@ export class AcpCopilotBackend implements CopilotBackend {
         resolvedSessionId = session.sessionId;
       }
 
-      let accumulated = '';
+      const timeline: TimelineEntry[] = [];
+      // Current agent text entry — reset to null when a block is appended so
+      // text arriving after a tool call creates a new entry after the block.
+      let currentAgentEntry: TimelineEntry | null = null;
       let cancelled = false;
-      const eventBlocks: string[] = [];
       const inlineBlocks = this.config.copilot.inlineBlocks;
-      // Track toolCallId -> block index for replacing start block with complete block
-      const toolBlockIndex = new Map<string, number>();
+      // Tool entries tracked by toolCallId for in-place complete-block update
+      const toolEntries = new Map<string, TimelineEntry>();
       const toolStartEvents = new Map<string, Extract<SessionEvent, { type: 'tool.execution_start' }>>();
+
+      const appendAgentDelta = (delta: string): void => {
+        if (!currentAgentEntry) {
+          currentAgentEntry = { text: '' };
+          timeline.push(currentAgentEntry);
+        }
+        currentAgentEntry.text += delta;
+      };
+
+      const addBlock = (text: string): TimelineEntry => {
+        currentAgentEntry = null; // next text delta starts a new entry after this block
+        const entry: TimelineEntry = { text };
+        timeline.push(entry);
+        return entry;
+      };
 
       const runStartedAt = Date.now();
       // Track last VISIBLE update (onUpdate call) — probe fires when no visible output for statusIntervalMs
       let lastVisibleUpdateAt = runStartedAt;
-      let probeBlockIndex: number | undefined;
+      let probeEntry: TimelineEntry | undefined;
 
       const elapsedString = (ms: number): string => {
         const secs = Math.round(ms / 1000);
@@ -154,40 +173,39 @@ export class AcpCopilotBackend implements CopilotBackend {
       };
 
       // Emit a visible streaming update and record the time
-      const emitUpdate = (text: string): void => {
+      const emitUpdate = (): void => {
         lastVisibleUpdateAt = Date.now();
-        hooks?.onUpdate?.(text);
+        hooks?.onUpdate?.(buildTimelineText(timeline));
       };
 
       const subscribeSession = (s: CopilotSession): (() => void) => s.on((event: SessionEvent) => {
         if (event.type === 'assistant.message_delta') {
-          accumulated += event.data.deltaContent;
-          emitUpdate(buildTimelineText(eventBlocks, accumulated));
+          appendAgentDelta(event.data.deltaContent);
+          emitUpdate();
         } else if (inlineBlocks !== "off") {
           if (event.type === 'tool.execution_start') {
             toolStartEvents.set(event.data.toolCallId, event);
-            const idx = eventBlocks.length;
-            toolBlockIndex.set(event.data.toolCallId, idx);
-            eventBlocks.push(buildToolStartBlock(event));
-            emitUpdate(buildTimelineText(eventBlocks, accumulated));
+            const entry = addBlock(buildToolStartBlock(event));
+            toolEntries.set(event.data.toolCallId, entry);
+            emitUpdate();
           } else if (event.type === 'tool.execution_complete') {
             const startEv = toolStartEvents.get(event.data.toolCallId);
-            const idx = toolBlockIndex.get(event.data.toolCallId);
-            if (startEv !== undefined && idx !== undefined) {
-              eventBlocks[idx] = buildToolCompleteBlock(startEv, event);
+            const entry = toolEntries.get(event.data.toolCallId);
+            if (startEv !== undefined && entry !== undefined) {
+              entry.text = buildToolCompleteBlock(startEv, event);
             } else {
               const icon = event.data.success ? "✅" : "❌";
-              eventBlocks.push(["```text", `${icon} tool done`, "```"].join("\n"));
+              addBlock(["```text", `${icon} tool done`, "```"].join("\n"));
             }
-            emitUpdate(buildTimelineText(eventBlocks, accumulated));
+            emitUpdate();
           } else if (event.type === 'assistant.reasoning') {
-            eventBlocks.push(renderReasoning(event));
-            emitUpdate(buildTimelineText(eventBlocks, accumulated));
+            addBlock(renderReasoning(event));
+            emitUpdate();
           } else if (event.type === 'session.info') {
             const block = renderSessionInfo(event);
             if (block) {
-              eventBlocks.push(block);
-              emitUpdate(buildTimelineText(eventBlocks, accumulated));
+              addBlock(block);
+              emitUpdate();
             }
           }
         }
@@ -203,13 +221,12 @@ export class AcpCopilotBackend implements CopilotBackend {
           if (Date.now() - lastVisibleUpdateAt < statusIntervalMs) return;
           const elapsed = elapsedString(Date.now() - runStartedAt);
           const block = ["```text", `⏳ Running… (elapsed: ${elapsed})`, "```"].join("\n");
-          if (probeBlockIndex === undefined) {
-            probeBlockIndex = eventBlocks.length;
-            eventBlocks.push(block);
+          if (!probeEntry) {
+            probeEntry = addBlock(block);
           } else {
-            eventBlocks[probeBlockIndex] = block;
+            probeEntry.text = block;
           }
-          emitUpdate(buildTimelineText(eventBlocks, accumulated));
+          emitUpdate();
         }, statusIntervalMs);
         probeTimer.unref();
       }
@@ -219,19 +236,31 @@ export class AcpCopilotBackend implements CopilotBackend {
         session.abort().catch(() => {});
       });
 
+      const finalizeTimeline = (finalContent?: string): string => {
+        // Use server's authoritative final text if provided and differs from streamed deltas
+        if (finalContent !== undefined) {
+          if (currentAgentEntry) {
+            currentAgentEntry.text = finalContent;
+          } else if (finalContent.trim()) {
+            timeline.push({ text: finalContent });
+          }
+        }
+        return buildTimelineText(timeline);
+      };
+
       try {
         const result = await session.sendAndWait(
           { prompt: input.text },
           this.config.copilot.runTimeoutMs || 600_000
         );
         // On success: if a probe block was shown, replace it with a completion marker
-        if (probeBlockIndex !== undefined) {
+        if (probeEntry) {
           const elapsed = elapsedString(Date.now() - runStartedAt);
-          eventBlocks[probeBlockIndex] = ["```text", `⏱️ Completed (${elapsed})`, "```"].join("\n");
+          probeEntry.text = ["```text", `⏱️ Completed (${elapsed})`, "```"].join("\n");
         }
-        const finalOutput = buildTimelineText(eventBlocks, result?.data?.content ?? accumulated);
+        const finalOutput = finalizeTimeline(result?.data?.content);
         // Push final clean state so accumulatedStreamText in app.ts is up to date
-        emitUpdate(finalOutput);
+        emitUpdate();
         return {
           runId,
           sessionId: resolvedSessionId,
@@ -258,12 +287,12 @@ export class AcpCopilotBackend implements CopilotBackend {
               { prompt: input.text },
               this.config.copilot.runTimeoutMs || 600_000
             );
-            if (probeBlockIndex !== undefined) {
+            if (probeEntry) {
               const elapsed = elapsedString(Date.now() - runStartedAt);
-              eventBlocks[probeBlockIndex] = ["```text", `⏱️ Completed (${elapsed})`, "```"].join("\n");
+              probeEntry.text = ["```text", `⏱️ Completed (${elapsed})`, "```"].join("\n");
             }
-            const finalOutput = buildTimelineText(eventBlocks, result?.data?.content ?? accumulated);
-            emitUpdate(finalOutput);
+            const finalOutput = finalizeTimeline(result?.data?.content);
+            emitUpdate();
             return { runId, sessionId: resolvedSessionId, output: finalOutput, status: cancelled ? 'cancelled' : 'completed' };
           } catch (retryErr) {
             err = retryErr;
@@ -278,13 +307,13 @@ export class AcpCopilotBackend implements CopilotBackend {
         const errorBlock = isTimeout
           ? ["```text", `❌ Turn timed out (${elapsed})`, "```"].join("\n")
           : ["```text", `❌ Turn failed (${elapsed}): ${err instanceof Error ? err.message : String(err)}`, "```"].join("\n");
-        if (probeBlockIndex !== undefined) {
-          eventBlocks[probeBlockIndex] = errorBlock;
+        if (probeEntry) {
+          probeEntry.text = errorBlock;
         } else {
-          eventBlocks.push(errorBlock);
+          addBlock(errorBlock);
         }
-        const errorOutput = buildTimelineText(eventBlocks, accumulated);
-        emitUpdate(errorOutput);
+        const errorOutput = buildTimelineText(timeline);
+        emitUpdate();
         return {
           runId,
           sessionId: resolvedSessionId,
