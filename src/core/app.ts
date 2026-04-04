@@ -352,7 +352,7 @@ export class App {
         "",
         "- `/project [list|bind [<path>|-n <index>|-m]|unbind <path>] [-h|--help]` show the current project or manage project bindings",
         "- `/git [args...]` run `git` directly in the current bound project",
-        "- `/cat`, `/find`, `/head`, `/ls`, `/mkdir`, `/pwd`, `/rg`, `/rmdir`, `/sha256sum`, `/tail`, `/touch`, `/trash`, `/trash-list`, `/trash-restore`, `/tree`, `/wc` run local project commands",
+        "- `/cat`, `/cp`, `/find`, `/head`, `/ln`, `/ls`, `/mkdir`, `/mv`, `/pwd`, `/readlink`, `/rg`, `/rmdir`, `/sha256sum`, `/tail`, `/tar`, `/touch`, `/trash`, `/trash-list`, `/trash-restore`, `/tree`, `/wc` run local project commands",
         "",
         "## Diagnostics",
         "",
@@ -949,15 +949,20 @@ export class App {
 
     if (
       command?.name === "cat" ||
+      command?.name === "cp" ||
       command?.name === "find" ||
       command?.name === "head" ||
       command?.name === "ls" ||
+      command?.name === "ln" ||
       command?.name === "mkdir" ||
+      command?.name === "mv" ||
       command?.name === "pwd" ||
+      command?.name === "readlink" ||
       command?.name === "rg" ||
       command?.name === "rmdir" ||
       command?.name === "sha256sum" ||
       command?.name === "tail" ||
+      command?.name === "tar" ||
       command?.name === "touch" ||
       command?.name === "trash" ||
       command?.name === "trash-list" ||
@@ -1050,12 +1055,13 @@ export class App {
   }
 
   private titleForCommand(commandName?: string, rawInput?: string): string {
+    const detail = rawInput ? rawInput.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") : undefined;
     if (!commandName) {
-      return this.composeTitle("Copilot", "🤖", rawInput || "reply");
+      return this.composeTitle("Copilot", "🤖", detail || "reply");
     }
     const base = this.commandBaseTitle(commandName);
     const emoji = this.commandTitleEmoji(commandName);
-    return this.composeTitle(base, emoji, rawInput || `/${commandName}`);
+    return this.composeTitle(base, emoji, detail || `/${commandName}`);
   }
 
   private composeTitle(base: string, emoji: string | undefined, detail: string): string {
@@ -1082,12 +1088,21 @@ export class App {
       case "git": return "Git";
       case "feishu": return "Feishu";
       case "pwd": return "pwd";
+      case "readlink": return "readlink";
       case "ls": return "ls";
+      case "ln": return "ln";
       case "cat": return "cat";
+      case "cp": return "cp";
+      case "head": return "head";
+      case "tail": return "tail";
+      case "tar": return "tar";
       case "tree": return "tree";
       case "find": return "find";
       case "rg": return "rg";
+      case "sha256sum": return "sha256sum";
+      case "wc": return "wc";
       case "mkdir": return "mkdir";
+      case "mv": return "mv";
       case "rmdir": return "rmdir";
       case "touch": return "touch";
       case "trash": return "trash";
@@ -1113,11 +1128,19 @@ export class App {
       case "feishu": return "🪶";
       case "pwd":
       case "ls":
+      case "ln":
       case "cat":
+      case "cp":
+      case "head":
+      case "tail":
+      case "tar":
       case "tree":
       case "find":
       case "rg":
+      case "sha256sum":
+      case "wc":
       case "mkdir":
+      case "mv":
       case "rmdir":
       case "touch":
       case "trash":
@@ -1152,15 +1175,20 @@ export class App {
       case "stop":
       case "git":
       case "cat":
+      case "cp":
       case "find":
       case "head":
+      case "ln":
       case "ls":
       case "mkdir":
+      case "mv":
       case "pwd":
+      case "readlink":
       case "rg":
       case "rmdir":
       case "sha256sum":
       case "tail":
+      case "tar":
       case "touch":
       case "trash":
       case "trash-list":
@@ -1591,10 +1619,13 @@ export class App {
   }
 
   private async runLocalCommand(
-    command: "cat" | "find" | "head" | "ls" | "mkdir" | "pwd" | "rg" | "rmdir" | "sha256sum" | "tail" | "touch" | "trash" | "trash-list" | "trash-restore" | "tree" | "wc",
+    command: "cat" | "cp" | "find" | "head" | "ln" | "ls" | "mkdir" | "mv" | "pwd" | "readlink" | "rg" | "rmdir" | "sha256sum" | "tail" | "tar" | "touch" | "trash" | "trash-list" | "trash-restore" | "tree" | "wc",
     project: string,
     args: string[]
   ): Promise<string | AppResponse> {
+    // Feishu auto-converts filenames (e.g. README.md) to markdown links [README.md](http://readme.md/)
+    // Strip these back to plain text before passing to the binary
+    args = args.map(arg => arg.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"));
     const bin = command === "trash-list" ? "trash-list"
       : command === "trash-restore" ? "trash-restore"
       : command;

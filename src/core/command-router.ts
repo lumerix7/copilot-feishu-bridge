@@ -12,15 +12,20 @@ export type CommandName =
   | "project"
   | "git"
   | "cat"
+  | "cp"
   | "find"
   | "head"
   | "ls"
+  | "ln"
   | "mkdir"
+  | "mv"
   | "pwd"
+  | "readlink"
   | "rg"
   | "rmdir"
   | "sha256sum"
   | "tail"
+  | "tar"
   | "touch"
   | "trash"
   | "trash-list"
@@ -119,15 +124,20 @@ export function parseCommand(message: IncomingMessage): ParsedCommand | ParsedCo
       "project",
       "git",
       "cat",
+      "cp",
       "find",
       "head",
       "ls",
+      "ln",
       "mkdir",
+      "mv",
       "pwd",
+      "readlink",
       "rg",
       "rmdir",
       "sha256sum",
       "tail",
+      "tar",
       "touch",
       "trash",
       "trash-list",

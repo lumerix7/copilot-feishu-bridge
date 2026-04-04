@@ -50,7 +50,7 @@ Additional settings live in `config.json` (pointed to by `BRIDGE_CONFIG_JSON`):
     "defaultModel": "claude-sonnet-4.5"
   },
   "project": {
-    "allowedRoots": ["/home/<user>", "/volumes"],
+    "allowedRoots": ["/home/<user>"],
     "defaultPath": "/path/to/default/project",
     "knownPaths": ["/path/to/project-a", "/path/to/project-b"],
     "listMaxCount": 100
@@ -78,21 +78,28 @@ npm start
 
 All commands are slash commands in a Feishu DM to the bot.
 
-| Command | Description |
-|---|---|
-| `/help` | Show command list |
-| `/status [check-update]` | Show Copilot, session, project, and bridge state; `check-update` checks npm versions |
-| `/new [-C <dir>]` | Create and bind a fresh Copilot session |
-| `/session [list [--project <path>] [--all]]` | Inspect current session or browse recent sessions |
-| `/resume [<id>\|-n <index>]` | Resume a session by ID or list index |
-| `/stop` | Stop the active Copilot run |
-| `/model [--list\|<name>\|clear]` | Show, list (with details), or change the Copilot model |
-| `/system [clear\|<text>]` | Show, set, or clear the system prompt |
-| `/project [list\|bind [<path>\|-n <index>\|-m]\|unbind <path>] [-h\|--help]` | Manage project bindings |
-| `/git [args...]` | Run `git` in the current bound project |
-| `/cat`, `/find`, `/head`, `/ls`, `/pwd`, `/rg`, `/sha256sum`, `/tail`, `/tree`, `/wc` | Run read-only commands in the project |
-| `/feishu [ws\|send\|doctor]` | Feishu transport diagnostics |
-| `/log [-n <N>]` | Recent bridge service logs (systemd journal) |
+### Core
+
+- `/help` show commands
+- `/status [check-update] [-h|--help]` show current session and run state; `check-update` checks npm versions
+- `/new [-C <dir>] [-h|--help]` create and bind a fresh Copilot session
+- `/session [list [-n <count>] [--all] [--project <path>]] [-h|--help]` show the current session or browse recent sessions
+- `/resume [<session-id>|--last|-n <index>|--list] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session
+- `/stop` stop the current active run
+
+### Copilot
+
+- `/model [--list [--no-hidden] | <name>] [--reasoning <level>]` show or change model / reasoning effort
+- `/system [clear|<text>]` show, set, or clear the system prompt for this conversation
+
+### Project
+- `/project [list|bind [<path>|-n <index>|-m]|unbind <path>] [-h|--help]` show the current project or manage project bindings
+- `/git [args...]` run `git` directly in the current bound project
+- `/cat`, `/cp`, `/find`, `/head`, `/ln`, `/ls`, `/mkdir`, `/mv`, `/pwd`, `/readlink`, `/rg`, `/rmdir`, `/sha256sum`, `/tail`, `/tar`, `/touch`, `/trash`, `/trash-list`, `/trash-restore`, `/tree`, `/wc` run local project commands
+
+### Diagnostics
+- `/feishu [ws|send|doctor]` show Feishu websocket and outbound send diagnostics
+- `/log [-n <count>]` show recent bridge service logs from systemd journal
 
 ## Environment Variables
 
