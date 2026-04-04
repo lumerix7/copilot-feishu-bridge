@@ -103,17 +103,30 @@ export class AcpCopilotBackend implements CopilotBackend {
       let resolvedSessionId: string;
 
       if (sessionId) {
-        try {
-          session = await this.acpClient.getOrResumeSession(
-            sessionId,
-            project,
-            options?.systemMessage,
-            options?.reasoningEffort,
-          );
-          resolvedSessionId = sessionId;
-        } catch {
-          session = await this.acpClient.createSession(project, options?.systemMessage, options?.reasoningEffort);
-          resolvedSessionId = session.sessionId;
+        // Proactively verify the session still exists on ACP before using it
+        const exists = await this.acpClient.sessionExists(sessionId);
+        if (!exists) {
+          // Session gone from ACP — evict stale cache, try resume (ACP may still accept it), fall back to create
+          this.acpClient.removeSession(sessionId);
+          try {
+            session = await this.acpClient.getOrResumeSession(
+              sessionId, project, options?.systemMessage, options?.reasoningEffort,
+            );
+            resolvedSessionId = sessionId;
+          } catch {
+            session = await this.acpClient.createSession(project, options?.systemMessage, options?.reasoningEffort);
+            resolvedSessionId = session.sessionId;
+          }
+        } else {
+          try {
+            session = await this.acpClient.getOrResumeSession(
+              sessionId, project, options?.systemMessage, options?.reasoningEffort,
+            );
+            resolvedSessionId = sessionId;
+          } catch {
+            session = await this.acpClient.createSession(project, options?.systemMessage, options?.reasoningEffort);
+            resolvedSessionId = session.sessionId;
+          }
         }
       } else {
         session = await this.acpClient.createSession(project, options?.systemMessage, options?.reasoningEffort);
@@ -145,7 +158,7 @@ export class AcpCopilotBackend implements CopilotBackend {
         hooks?.onUpdate?.(text);
       };
 
-      const unsubscribe = session.on((event: SessionEvent) => {
+      const subscribeSession = (s: CopilotSession): (() => void) => s.on((event: SessionEvent) => {
         if (event.type === 'assistant.message_delta') {
           accumulated += event.data.deltaContent;
           emitUpdate(buildTimelineText(eventBlocks, accumulated));
@@ -178,6 +191,8 @@ export class AcpCopilotBackend implements CopilotBackend {
           }
         }
       });
+
+      let unsubscribe = subscribeSession(session);
 
       // Probe: inject/update a "still running" inline block when no visible output for statusIntervalMs
       const statusIntervalMs = this.config.copilot.statusIntervalMs;
@@ -223,6 +238,36 @@ export class AcpCopilotBackend implements CopilotBackend {
           status: cancelled ? 'cancelled' : 'completed',
         };
       } catch (err) {
+        // Stale cached session — evict, try resume first, fall back to create, then retry once
+        if (err instanceof Error && err.message.includes("Session not found") && !cancelled) {
+          this.acpClient.removeSession(resolvedSessionId);
+          unsubscribe();
+          try {
+            try {
+              session = await this.acpClient.getOrResumeSession(
+                resolvedSessionId, project, options?.systemMessage, options?.reasoningEffort
+              );
+            } catch {
+              session = await this.acpClient.createSession(project, options?.systemMessage, options?.reasoningEffort);
+              resolvedSessionId = session.sessionId;
+            }
+            unsubscribe = subscribeSession(session);
+            this.activeRuns.set(runId, () => { cancelled = true; session.abort().catch(() => {}); });
+            const result = await session.sendAndWait(
+              { prompt: input.text },
+              this.config.copilot.runTimeoutMs || 600_000
+            );
+            if (probeBlockIndex !== undefined) {
+              const elapsed = elapsedString(Date.now() - runStartedAt);
+              eventBlocks[probeBlockIndex] = ["```text", `⏱️ Completed (${elapsed})`, "```"].join("\n");
+            }
+            const finalOutput = buildTimelineText(eventBlocks, result?.data?.content ?? accumulated);
+            emitUpdate(finalOutput);
+            return { runId, sessionId: resolvedSessionId, output: finalOutput, status: cancelled ? 'cancelled' : 'completed' };
+          } catch (retryErr) {
+            err = retryErr;
+          }
+        }
         // On failure/timeout: replace or append an error inline block
         const elapsed = elapsedString(Date.now() - runStartedAt);
         const isTimeout = !cancelled && (

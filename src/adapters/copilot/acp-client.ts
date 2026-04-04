@@ -106,6 +106,16 @@ export class AcpClient {
     return this.sessionModelInfo.get(sessionId);
   }
 
+  async sessionExists(sessionId: string): Promise<boolean> {
+    try {
+      const client = this.getOrCreateClient();
+      const metadata = await client.getSessionMetadata(sessionId);
+      return metadata !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
   async getOrResumeSession(
     sessionId: string,
     workingDirectory?: string,
