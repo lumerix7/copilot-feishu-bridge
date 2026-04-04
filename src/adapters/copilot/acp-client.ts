@@ -244,6 +244,23 @@ export class AcpClient {
     return session.rpc.compaction.compact();
   }
 
+  async getQuota(): Promise<number | undefined> {
+    try {
+      const client = this.getOrCreateClient();
+      const result = await client.rpc.account.getQuota();
+      const snapshots = result.quotaSnapshots;
+      type Snap = { remainingPercentage: number };
+      const get = (key: string) => (snapshots[key] as Snap | undefined)?.remainingPercentage;
+      // "premium_interactions" matches native copilot's "Remaining reqs."
+      const pct = get("premium_interactions") ?? get("chat");
+      if (pct !== undefined) return pct;
+      const values = Object.values(snapshots).map(s => (s as Snap).remainingPercentage);
+      return values.length > 0 ? Math.min(...values) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   async shutdown(): Promise<void> {
     if (this.client) {
       await this.client.stop().catch(() => {});

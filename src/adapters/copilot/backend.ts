@@ -47,6 +47,7 @@ export interface CopilotBackend {
   getCopilotInfo(): Promise<CopilotInfo>;
   getSessionMessages(sessionId: string): Promise<SessionEvent[]>;
   getSessionModelInfo(sessionId: string): SessionModelInfo | undefined;
+  getSessionQuota(sessionId: string): number | undefined;
   probeSessionModelInfo(sessionId: string, workingDirectory?: string): Promise<SessionModelInfo | undefined>;
   setSessionModel(sessionId: string, model: string, reasoningEffort?: "low" | "medium" | "high" | "xhigh"): Promise<void>;
 }

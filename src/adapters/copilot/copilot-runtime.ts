@@ -81,6 +81,7 @@ export class AcpCopilotBackend implements CopilotBackend {
   readonly mode = 'acp' as const;
   private readonly acpClient = new AcpClient();
   private readonly activeRuns = new Map<string, () => void>();
+  private readonly sessionQuotas = new Map<string, number>();
 
   constructor(private readonly config: AppConfig) {}
 
@@ -294,6 +295,10 @@ export class AcpCopilotBackend implements CopilotBackend {
         unsubscribe();
         if (probeTimer !== undefined) clearInterval(probeTimer);
         this.activeRuns.delete(runId);
+        // Fire-and-forget: update quota cache after turn
+        void this.acpClient.getQuota().then(q => {
+          if (q !== undefined) this.sessionQuotas.set(resolvedSessionId, q);
+        });
       }
     })();
 
@@ -361,6 +366,10 @@ export class AcpCopilotBackend implements CopilotBackend {
     } catch {
       return [];
     }
+  }
+
+  getSessionQuota(sessionId: string): number | undefined {
+    return this.sessionQuotas.get(sessionId);
   }
 
   getSessionModelInfo(sessionId: string): SessionModelInfo | undefined {

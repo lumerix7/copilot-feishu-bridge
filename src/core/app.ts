@@ -1296,11 +1296,14 @@ export class App {
     const model = sessionInfo?.model;
     const effort = explicitEffort || sessionInfo?.reasoningEffort;
     const project = binding?.project;
+    const quota = sessionId ? this.copilot.getSessionQuota(sessionId) : undefined;
+    const quotaStr = quota !== undefined ? `${quota.toFixed(1)}%` : undefined;
     const parts: string[] = [
       ...(model ? [effort ? `${model} ${effort}` : model] : []),
       ...(project ? [project] : []),
       ...(sessionId ? [sessionId] : []),
-      "full-access"
+      "full-access",
+      ...(quotaStr ? [quotaStr] : []),
     ];
     return `${this.buildIsoFooter()}  |  ${parts.join(" · ")}`;
   }
