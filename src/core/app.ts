@@ -1010,27 +1010,7 @@ export class App {
         status: "running"
       });
 
-      // Probe interval: send a "still running" status card periodically
-      const runStartedAt = Date.now();
-      const probeTarget = onStatus || onUpdate;
-      let probeTimer: ReturnType<typeof setInterval> | undefined;
-      if (probeTarget && this.config.copilot.statusIntervalMs > 0) {
-        probeTimer = setInterval(async () => {
-          const elapsed = Math.round((Date.now() - runStartedAt) / 1000);
-          const mins = Math.floor(elapsed / 60);
-          const secs = elapsed % 60;
-          const elapsedStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-          await probeTarget(`Running… (elapsed: ${elapsedStr})`).catch(() => {});
-        }, this.config.copilot.statusIntervalMs);
-      }
-
-      let result: CopilotTurnResult;
-      try {
-        result = await handle.done;
-      } finally {
-        if (probeTimer !== undefined) clearInterval(probeTimer);
-      }
-
+      const result = await handle.done;
       const nextBinding =
         existing && existing.copilotSessionId === result.sessionId
           ? { ...existing, updatedAt: new Date().toISOString() }

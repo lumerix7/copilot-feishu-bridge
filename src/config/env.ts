@@ -49,7 +49,7 @@ export interface AppConfig {
     sessionListMaxCount: number;
     resumeDefaultMessages: number;
     statusIncludeProject: boolean;
-    inlineBlocks: "off" | "compact" | "full";
+    inlineBlocks: "off" | "on";
   };
   project: {
     allowedRoots: string[];
@@ -288,7 +288,7 @@ export function loadConfig(): AppConfig {
         ["status", "includeProject"]
       ),
       inlineBlocks: normalizeInlineBlocks(
-        readTextSetting("COPILOT_INLINE_BLOCKS", "compact", jsonConfig, ["copilot", "inlineBlocks"])
+        readTextSetting("COPILOT_INLINE_BLOCKS", "on", jsonConfig, ["copilot", "inlineBlocks"])
       )
     },
     project: {
@@ -311,8 +311,8 @@ export function loadConfig(): AppConfig {
 
 function normalizeInlineBlocks(value: string): AppConfig["copilot"]["inlineBlocks"] {
   const v = value.trim().toLowerCase();
-  if (v === "off" || v === "full") return v;
-  return "compact";
+  if (v === "off" || v === "false" || v === "0") return "off";
+  return "on";
 }
 
 function normalizeFeishuLoggerLevel(value: string): AppConfig["feishu"]["wsLoggerLevel"] {
