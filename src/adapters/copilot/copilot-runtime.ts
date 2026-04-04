@@ -93,12 +93,12 @@ export class AcpCopilotBackend implements CopilotBackend {
     return false;
   }
 
-  async getSession(sessionId: string): Promise<boolean> {
+  async getSession(sessionId: string): Promise<string | undefined> {
     try {
       const sessions = await this.acpClient.listSessions();
-      return sessions.some((s) => s.sessionId === sessionId);
+      return sessions.some((s) => s.sessionId === sessionId) ? sessionId : undefined;
     } catch {
-      return false;
+      return undefined;
     }
   }
 
@@ -133,6 +133,14 @@ export class AcpCopilotBackend implements CopilotBackend {
       this.acpClient.getAuthStatus(),
     ]);
     return { status, auth };
+  }
+
+  async getSessionMessages(sessionId: string): Promise<SessionEvent[]> {
+    try {
+      return await this.acpClient.getSessionMessages(sessionId);
+    } catch {
+      return [];
+    }
   }
 
   async shutdown(): Promise<void> {

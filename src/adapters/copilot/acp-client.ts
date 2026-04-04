@@ -3,6 +3,7 @@ import {
   CopilotSession,
   approveAll,
   type SessionMetadata,
+  type SessionEvent,
   type SessionListFilter,
   type ModelInfo,
   type SessionConfig,
@@ -106,6 +107,17 @@ export class AcpClient {
     const client = this.getOrCreateClient();
     if (client.getState() !== 'connected') await client.start();
     return client.getAuthStatus();
+  }
+
+  async getSessionMessages(sessionId: string): Promise<SessionEvent[]> {
+    // Reuse cached session or do a minimal resume just to read history
+    let session = this.sessions.get(sessionId);
+    if (!session) {
+      const client = this.getOrCreateClient();
+      session = await client.resumeSession(sessionId, { onPermissionRequest: approveAll });
+      this.sessions.set(sessionId, session);
+    }
+    return session.getMessages();
   }
 
   removeSession(sessionId: string): void {

@@ -48,6 +48,7 @@ export interface AppConfig {
     streamUpdateIntervalMs: number;
     sessionListDefaultCount: number;
     sessionListMaxCount: number;
+    resumeDefaultMessages: number;
     statusIncludeProject: boolean;
   };
   project: {
@@ -92,6 +93,7 @@ interface JsonConfigShape {
   session?: {
     listDefaultCount?: unknown;
     listMaxCount?: unknown;
+    resumeDefaultMessages?: unknown;
   };
   project?: {
     allowedRoots?: unknown;
@@ -277,6 +279,13 @@ export function loadConfig(): AppConfig {
         jsonConfig,
         ["session", "listMaxCount"],
         { min: 1 }
+      ),
+      resumeDefaultMessages: readIntegerSetting(
+        "SESSION_RESUME_DEFAULT_MESSAGES",
+        5,
+        jsonConfig,
+        ["session", "resumeDefaultMessages"],
+        { min: 0 }
       ),
       statusIncludeProject: readBooleanSetting(
         "STATUS_INCLUDE_PROJECT",

@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { CopilotBackend, CopilotTurnOptions } from "../adapters/copilot/backend.js";
-import type { ModelInfo } from '@github/copilot-sdk';import { createCopilotBackend } from "../adapters/copilot/copilot-runtime.js";
+import type { ModelInfo, SessionEvent } from '@github/copilot-sdk';import { createCopilotBackend } from "../adapters/copilot/copilot-runtime.js";
 import { FeishuGateway } from "../adapters/feishu/feishu-gateway.js";
 import { AppConfig } from "../config/env.js";
 import { conversationKeyFor } from "./conversation-key.js";
@@ -338,7 +338,7 @@ export class App {
         "- `/status [check-update] [-h|--help]` show current session and run state; `check-update` checks npm versions",
         "- `/new [-C <dir>]` create and bind a fresh Copilot session",
         "- `/session [list [-n <count>] [--all] [--project <path>]] [-h|--help]` show the current session or browse recent sessions",
-        "- `/resume [<session-id>|-n <index>]` resume a session",
+        "- `/resume [<session-id>|--last|-n <index>|--list] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session",
         "- `/stop` stop the current active run",
         "",
         "## Copilot",
@@ -541,14 +541,22 @@ export class App {
       }
       const currentProject = existing?.project || this.config.project.defaultProject;
 
-      if (resumeArgs.peek() === "--list") {
-        resumeArgs.shift();
-        const sessions = await this.listSessionsForDisplay(
-          this.config.copilot.sessionListMaxCount,
-          currentProject
-        );
+      // Parse scope/list options (may appear anywhere before or after selector)
+      const allProjects = resumeArgs.takeFlag("--all");
+      const projectScopeArg = resumeArgs.takeOption("--project");
+      const cdArg = resumeArgs.takeOption("-C", "--cd");
+      const messagesArg = resumeArgs.takeOption("--messages");
+      const showList = resumeArgs.takeFlag("--list");
+
+      const scopedProject = projectScopeArg
+        ? await this.resolveProject(projectScopeArg, currentProject)
+        : currentProject;
+      const listProject = allProjects ? undefined : scopedProject;
+
+      if (showList) {
+        const sessions = await this.listSessionsForDisplay(this.config.copilot.sessionListMaxCount, listProject);
         if (sessions.length === 0) {
-          return this.noSessionsText(currentProject);
+          return this.noSessionsText(scopedProject);
         }
         return this.renderSessionList("Resume Sessions", sessions, existing?.copilotSessionId);
       }
@@ -557,7 +565,11 @@ export class App {
       let resumeSource = "latest";
       let resumeIndex: number | undefined;
 
-      if (resumeArgs.peek() === "-n") {
+      if (resumeArgs.takeFlag("--last")) {
+        const sessions = await this.listSessionsForDisplay(1, listProject);
+        targetSessionId = sessions[0]?.sessionId;
+        resumeSource = "last";
+      } else if (resumeArgs.peek() === "-n") {
         resumeArgs.shift();
         const rawIndex = resumeArgs.shift();
         const index = Number(rawIndex || "");
@@ -566,7 +578,7 @@ export class App {
         }
         const sessions = await this.listSessionsForDisplay(
           Math.min(index, this.config.copilot.sessionListMaxCount),
-          currentProject
+          listProject
         );
         const selected = sessions[index - 1];
         if (!selected) {
@@ -579,22 +591,52 @@ export class App {
         targetSessionId = resumeArgs.shift();
         resumeSource = "explicit";
       } else {
-        // Latest session
-        const sessions = await this.listSessionsForDisplay(1, currentProject);
+        const sessions = await this.listSessionsForDisplay(1, listProject);
         targetSessionId = sessions[0]?.sessionId || existing?.copilotSessionId;
       }
 
       if (!targetSessionId) {
-        return this.noSessionsText(currentProject);
+        return this.noSessionsText(scopedProject);
       }
       await sendEarlyUpdate(`Resolving session \`${targetSessionId}\`...`);
-      const sessionExists = await this.copilot.getSession(targetSessionId);
-      if (!sessionExists) {
-        return this.renderCommandError("Resume", `Session not found: ${targetSessionId}`);
+      const resolvedSessionId = await this.copilot.getSession(targetSessionId);
+      if (!resolvedSessionId) {
+        return this.renderCommandError("Resume", `Session not found: \`${targetSessionId}\``);
       }
+      targetSessionId = resolvedSessionId;
       const sessionMeta = (await this.copilot.listSessions()).find((s) => s.sessionId === targetSessionId);
-      const binding = this.makeBinding(key, targetSessionId, sessionMeta?.context?.cwd || currentProject, existing);
+
+      // -C/--cd: only apply if it matches the session's own project
+      let resolvedProject = sessionMeta?.context?.cwd || currentProject;
+      if (cdArg) {
+        try {
+          const requestedProject = await this.resolveProject(cdArg, currentProject);
+          if (requestedProject === resolvedProject) {
+            resolvedProject = requestedProject;
+          }
+        } catch {
+          // ignore invalid -C
+        }
+      }
+
+      const binding = this.makeBinding(key, targetSessionId, resolvedProject, existing);
       await this.store.put(binding);
+
+      // --messages: fetch and append last N conversation turns (default from config)
+      const messageCount = messagesArg !== undefined
+        ? parseInt(messagesArg, 10)
+        : this.config.copilot.resumeDefaultMessages;
+      let messageLines: string[] = [];
+      if (Number.isFinite(messageCount) && messageCount > 0) {
+        const events = await this.copilot.getSessionMessages(targetSessionId);
+        const turns = this.extractMessageTurns(events, messageCount);
+        if (turns.length > 0) {
+          messageLines = ["", "---", "", `## Last ${turns.length} Message${turns.length === 1 ? "" : "s"}`, ""];
+          for (const turn of turns) {
+            messageLines.push(`**${turn.role}**: ${this.previewText(turn.content, 300)}`);
+          }
+        }
+      }
 
       const sections = [
         "# Resume Session",
@@ -605,7 +647,8 @@ export class App {
         `- **Project**: \`${binding.project}\``,
         `- **Time**: ${this.formatAnyTimestamp(sessionMeta?.startTime?.toISOString())}`,
         `- **Cwd**: \`${sessionMeta?.context?.cwd || "(unknown)"}\``,
-        `- **About**: ${sessionMeta?.summary || "(no preview)"}`
+        `- **About**: ${sessionMeta?.summary || "(no preview)"}`,
+        ...messageLines
       ];
 
       return sections.join("\n");
@@ -1271,6 +1314,18 @@ export class App {
     });
   }
 
+  private extractMessageTurns(events: SessionEvent[], count: number): { role: string; content: string }[] {
+    const turns: { role: string; content: string }[] = [];
+    for (const event of events) {
+      if (event.type === "user.message" && event.data?.content) {
+        turns.push({ role: "User", content: event.data.content });
+      } else if (event.type === "assistant.message" && event.data?.content) {
+        turns.push({ role: "Copilot", content: event.data.content });
+      }
+    }
+    return turns.slice(-count);
+  }
+
   private previewText(value: string, maxLength = 120): string {
     const compact = value.replace(/\s+/g, " ").trim();
     return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 3)}...`;
@@ -1323,7 +1378,7 @@ export class App {
         session.isRemote ? "remote" : ""
       ].filter(Boolean);
       lines.push(
-        `| ${index + 1} | ${escapeMarkdownCell(session.cwd || "(unknown)")} | ${escapeMarkdownCell(this.formatAnyTimestamp(session.modifiedAt ?? session.createdAt))} | ${escapeMarkdownCell(session.sessionId.slice(0, 8))} | ${escapeMarkdownCell(session.preview || "(no preview)")} | ${escapeMarkdownCell(flags.join(", ") || "-")} |`
+        `| ${index + 1} | ${escapeMarkdownCell(session.cwd || "(unknown)")} | ${escapeMarkdownCell(this.formatAnyTimestamp(session.modifiedAt ?? session.createdAt))} | ${escapeMarkdownCell(session.sessionId)} | ${escapeMarkdownCell(session.preview || "(no preview)")} | ${escapeMarkdownCell(flags.join(", ") || "-")} |`
       );
     }
     return lines.join("\n");
@@ -1741,8 +1796,24 @@ export class App {
       "",
       "## Usage",
       "",
-      "- `/resume [<session-id>|-n <index>|--list]`",
-      "- `/resume -h|--help`"
+      "- `/resume [<session-id>|--last|-n <index>|--list] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>]`",
+      "- `/resume -h|--help`",
+      "",
+      "## Options",
+      "",
+      "**Select Session**",
+      "- `<session-id>` — bind one specific session ID",
+      "- `--last` — bind the most recent session in the current scope",
+      "- `-n <index>` — bind the Nth session from the current `/session list` ordering",
+      "",
+      "**List Scope**",
+      "- `--list` — show the current resumable session list",
+      "- `--all` — expand browsing beyond the current project for `--list`",
+      "- `--project <path>` — scope `--list` browsing to one project path",
+      "",
+      "**Project**",
+      "- `-C, --cd <dir>` — keep the resumed session in that project only when it matches the session project",
+      "- `--messages <count>` — append the last N thread messages after a successful session change (default: 5, set 0 to disable)"
     ].join("\n");
   }
 

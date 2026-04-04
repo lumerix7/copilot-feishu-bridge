@@ -1,4 +1,4 @@
-import type { SessionMetadata, ModelInfo, GetStatusResponse, GetAuthStatusResponse } from '@github/copilot-sdk';
+import type { SessionMetadata, SessionEvent, ModelInfo, GetStatusResponse, GetAuthStatusResponse } from '@github/copilot-sdk';
 import { IncomingMessage } from "../../types/domain.js";
 
 export interface CopilotTurnResult {
@@ -39,8 +39,9 @@ export interface CopilotBackend {
     hooks?: CopilotRunHooks
   ): Promise<CopilotRunHandle>;
   stop(runId: string): Promise<boolean>;
-  getSession(sessionId: string): Promise<boolean>;
+  getSession(sessionId: string): Promise<string | undefined>;
   listSessions(project?: string, options?: { limit?: number }): Promise<SessionMetadata[]>;
   listModels(): Promise<ModelInfo[]>;
   getCopilotInfo(): Promise<CopilotInfo>;
+  getSessionMessages(sessionId: string): Promise<SessionEvent[]>;
 }
