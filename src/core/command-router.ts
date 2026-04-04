@@ -11,16 +11,22 @@ export type CommandName =
   | "system"
   | "project"
   | "git"
-  | "pwd"
-  | "ls"
   | "cat"
-  | "head"
-  | "tail"
-  | "wc"
-  | "sha256sum"
-  | "tree"
   | "find"
+  | "head"
+  | "ls"
+  | "mkdir"
+  | "pwd"
   | "rg"
+  | "rmdir"
+  | "sha256sum"
+  | "tail"
+  | "touch"
+  | "trash"
+  | "trash-list"
+  | "trash-restore"
+  | "tree"
+  | "wc"
   | "feishu"
   | "log";
 
@@ -112,16 +118,22 @@ export function parseCommand(message: IncomingMessage): ParsedCommand | ParsedCo
       "system",
       "project",
       "git",
-      "pwd",
-      "ls",
       "cat",
-      "head",
-      "tail",
-      "wc",
-      "sha256sum",
-      "tree",
       "find",
+      "head",
+      "ls",
+      "mkdir",
+      "pwd",
       "rg",
+      "rmdir",
+      "sha256sum",
+      "tail",
+      "touch",
+      "trash",
+      "trash-list",
+      "trash-restore",
+      "tree",
+      "wc",
       "feishu",
       "log"
     ].includes(head)

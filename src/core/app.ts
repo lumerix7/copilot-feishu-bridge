@@ -338,7 +338,7 @@ export class App {
         "",
         "- `/help` show commands",
         "- `/status [check-update] [-h|--help]` show current session and run state; `check-update` checks npm versions",
-        "- `/new [-C <dir>]` create and bind a fresh Copilot session",
+        "- `/new [-C <dir>] [-h|--help]` create and bind a fresh Copilot session",
         "- `/session [list [-n <count>] [--all] [--project <path>]] [-h|--help]` show the current session or browse recent sessions",
         "- `/resume [<session-id>|--last|-n <index>|--list] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session",
         "- `/stop` stop the current active run",
@@ -352,7 +352,7 @@ export class App {
         "",
         "- `/project [list|bind [<path>|-n <index>|-m]|unbind <path>] [-h|--help]` show the current project or manage project bindings",
         "- `/git [args...]` run `git` directly in the current bound project",
-        "- `/cat`, `/find`, `/head`, `/ls`, `/pwd`, `/rg`, `/sha256sum`, `/tail`, `/tree`, `/wc` run local project commands",
+        "- `/cat`, `/find`, `/head`, `/ls`, `/mkdir`, `/pwd`, `/rg`, `/rmdir`, `/sha256sum`, `/tail`, `/touch`, `/trash`, `/trash-list`, `/trash-restore`, `/tree`, `/wc` run local project commands",
         "",
         "## Diagnostics",
         "",
@@ -952,10 +952,16 @@ export class App {
       command?.name === "find" ||
       command?.name === "head" ||
       command?.name === "ls" ||
+      command?.name === "mkdir" ||
       command?.name === "pwd" ||
       command?.name === "rg" ||
+      command?.name === "rmdir" ||
       command?.name === "sha256sum" ||
       command?.name === "tail" ||
+      command?.name === "touch" ||
+      command?.name === "trash" ||
+      command?.name === "trash-list" ||
+      command?.name === "trash-restore" ||
       command?.name === "tree" ||
       command?.name === "wc"
     ) {
@@ -1075,12 +1081,18 @@ export class App {
       case "log": return "Log";
       case "git": return "Git";
       case "feishu": return "Feishu";
-      case "pwd": return "PWD";
-      case "ls": return "LS";
-      case "cat": return "Cat";
-      case "tree": return "Tree";
-      case "find": return "Find";
-      case "rg": return "RG";
+      case "pwd": return "pwd";
+      case "ls": return "ls";
+      case "cat": return "cat";
+      case "tree": return "tree";
+      case "find": return "find";
+      case "rg": return "rg";
+      case "mkdir": return "mkdir";
+      case "rmdir": return "rmdir";
+      case "touch": return "touch";
+      case "trash": return "trash";
+      case "trash-list": return "trash-list";
+      case "trash-restore": return "trash-restore";
       default: return "Copilot";
     }
   }
@@ -1105,6 +1117,12 @@ export class App {
       case "tree":
       case "find":
       case "rg":
+      case "mkdir":
+      case "rmdir":
+      case "touch":
+      case "trash":
+      case "trash-list":
+      case "trash-restore":
         return "📂";
       default: return undefined;
     }
@@ -1133,12 +1151,22 @@ export class App {
       case "resume":
       case "stop":
       case "git":
-      case "pwd":
-      case "ls":
       case "cat":
-      case "tree":
       case "find":
+      case "head":
+      case "ls":
+      case "mkdir":
+      case "pwd":
       case "rg":
+      case "rmdir":
+      case "sha256sum":
+      case "tail":
+      case "touch":
+      case "trash":
+      case "trash-list":
+      case "trash-restore":
+      case "tree":
+      case "wc":
         return "wathet";
       default:
         return "blue";
@@ -1563,13 +1591,16 @@ export class App {
   }
 
   private async runLocalCommand(
-    command: "cat" | "find" | "head" | "ls" | "pwd" | "rg" | "sha256sum" | "tail" | "tree" | "wc",
+    command: "cat" | "find" | "head" | "ls" | "mkdir" | "pwd" | "rg" | "rmdir" | "sha256sum" | "tail" | "touch" | "trash" | "trash-list" | "trash-restore" | "tree" | "wc",
     project: string,
     args: string[]
   ): Promise<string | AppResponse> {
+    const bin = command === "trash-list" ? "trash-list"
+      : command === "trash-restore" ? "trash-restore"
+      : command;
     const commandText = [command, ...args].join(" ");
     try {
-      const { stdout, stderr } = await execFileAsync(command, args, {
+      const { stdout, stderr } = await execFileAsync(bin, args, {
         cwd: project,
         timeout: GIT_COMMAND_TIMEOUT_MS,
         maxBuffer: 8 * 1024 * 1024
