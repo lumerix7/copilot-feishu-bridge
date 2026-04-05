@@ -450,6 +450,21 @@ export class App {
       const sessionMeta = existing?.copilotSessionId
         ? allSessions.find((s) => s.sessionId === existing.copilotSessionId)
         : undefined;
+      let lastUserMessage: string | undefined = sessionMeta?.summary;
+      if (existing?.copilotSessionId) {
+        try {
+          const messages = await this.copilot.getSessionMessages(existing.copilotSessionId);
+          for (let i = messages.length - 1; i >= 0; i--) {
+            const ev = messages[i];
+            if (ev.type === "user.message" && ev.data.content?.trim()) {
+              lastUserMessage = ev.data.content.trim();
+              break;
+            }
+          }
+        } catch {
+          // keep summary fallback
+        }
+      }
       const feishuDiagnostics = this.feishu?.diagnostics();
       const systemPrompt = this.conversationSystemPrompts.get(key);
       return [
@@ -462,10 +477,10 @@ export class App {
         `- **Model**: \`${(sessionId ? this.copilot.getSessionModelInfo(sessionId)?.model : undefined) ?? "(from ACP)"}\``,
         `- **Directory**: \`${project}\``,
         `- **Session**: \`${sessionId}\``,
-        `- **Session Time**: ${this.formatAnyTimestamp(sessionMeta?.startTime?.toISOString())}`,
-        ...(sessionMeta?.context?.cwd ? [`- **Session Cwd**: \`${sessionMeta.context.cwd}\``] : []),
-        ...(sessionMeta?.summary ? [`- **Session About**: ${this.previewText(sessionMeta.summary)}`] : []),
-        ...(systemPrompt ? [`- **System Prompt**: ${this.previewText(systemPrompt)}`] : []),
+        `- **Session time**: ${this.formatAnyTimestamp(sessionMeta?.startTime?.toISOString())}`,
+        ...(sessionMeta?.context?.cwd ? [`- **Session cwd**: \`${sessionMeta.context.cwd}\``] : []),
+        ...(lastUserMessage ? [`- **Session last message**: ${this.previewText(lastUserMessage)}`] : []),
+        ...(systemPrompt ? [`- **System prompt**: ${this.previewText(systemPrompt)}`] : []),
         "",
         "## Bridge",
         "",
@@ -658,7 +673,7 @@ export class App {
         `- **Project**: \`${binding.project}\``,
         `- **Time**: ${this.formatAnyTimestamp(sessionMeta?.startTime?.toISOString())}`,
         `- **Cwd**: \`${sessionMeta?.context?.cwd || "(unknown)"}\``,
-        `- **About**: ${sessionMeta?.summary || "(no preview)"}`,
+        `- **Last message**: ${sessionMeta?.summary || "(no preview)"}`,
         ...messageLines
       ];
 
@@ -738,7 +753,7 @@ export class App {
         ...(sessionInfo?.model ? [`- **Model**: \`${sessionInfo.model}\`${sessionInfo.reasoningEffort ? ` (effort: ${sessionInfo.reasoningEffort})` : ""}`] : []),
         `- **Time**: ${this.formatAnyTimestamp(sessionMeta?.startTime?.toISOString())}`,
         `- **Cwd**: \`${sessionMeta?.context?.cwd || "(unknown)"}\``,
-        `- **About**: ${sessionMeta?.summary || "(no preview)"}`
+        `- **Last message**: ${sessionMeta?.summary || "(no preview)"}`
       ].join("\n");
     }
 
@@ -892,7 +907,7 @@ export class App {
           "# Project",
           "",
           `- **Project**: \`${currentProject}\``,
-          `- **Allowed Roots**: ${this.config.project.allowedRoots.map((root) => `\`${root}\``).join(", ")}`
+          `- **Allowed roots**: ${this.config.project.allowedRoots.map((root) => `\`${root}\``).join(", ")}`
         ].join("\n");
       }
       const projectSubcommand = projectArgs.shift();
@@ -929,7 +944,7 @@ export class App {
           "# Project",
           "",
           `- **Project**: \`${project}\``,
-          `- **Removed Bindings**: \`${removed}\``
+          `- **Removed bindings**: \`${removed}\``
         ].join("\n");
       }
 
@@ -1078,8 +1093,8 @@ export class App {
       const feishuDiagnostics = this.feishu?.diagnostics();
       const text = [
         `- **Backend**: \`acp\``,
-        `- **Default Project**: \`${this.config.project.defaultProject}\``,
-        ...(binding?.project ? [`- **Current Project**: \`${binding.project}\``] : []),
+        `- **Default project**: \`${this.config.project.defaultProject}\``,
+        ...(binding?.project ? [`- **Current project**: \`${binding.project}\``] : []),
         ...(feishuDiagnostics ? [`- **Feishu**: ${this.formatFeishuStatusSummary(feishuDiagnostics)}`] : [])
       ].join("\n");
       await this.feishu?.sendStartupReady(text, this.buildFooter(undefined, binding), title, false);
@@ -1461,7 +1476,7 @@ export class App {
     project?: string
   ): Promise<SessionListEntry[]> {
     const sessions = await this.copilot.listSessions(project, { limit: Math.max(1, limit) });
-    return sessions.map((s) => ({
+    const entries = sessions.map((s) => ({
       sessionId: s.sessionId,
       createdAt: s.startTime?.toISOString(),
       modifiedAt: s.modifiedTime?.toISOString(),
@@ -1469,6 +1484,22 @@ export class App {
       preview: s.summary,
       isRemote: s.isRemote,
     }));
+    // Enrich with last user message in parallel (best-effort)
+    await Promise.allSettled(entries.map(async (entry) => {
+      try {
+        const messages = await this.copilot.getSessionMessages(entry.sessionId);
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const ev = messages[i];
+          if (ev.type === "user.message" && ev.data.content?.trim()) {
+            entry.preview = ev.data.content.trim();
+            break;
+          }
+        }
+      } catch {
+        // keep summary fallback
+      }
+    }));
+    return entries;
   }
 
   private noSessionsText(project: string): string {
@@ -1487,7 +1518,7 @@ export class App {
     const lines = [
       `# ${title}`,
       "",
-      "| # | Project | Updated | Session | About | Flags |",
+      "| # | Project | Updated | Session | Last message | Flags |",
       "| --- | --- | --- | --- | --- | --- |"
     ];
     for (const [index, session] of sessions.entries()) {
@@ -1781,15 +1812,15 @@ export class App {
     return [
       "# Feishu WS",
       "",
-      `- **Connected Once**: \`${diagnostics.wsConnectedOnce ? "yes" : "no"}\``,
+      `- **Connected once**: \`${diagnostics.wsConnectedOnce ? "yes" : "no"}\``,
       `- **Reconnecting**: \`${diagnostics.wsReconnecting ? "yes" : "no"}\``,
-      `- **Reconnect Count**: \`${diagnostics.reconnectCount}\``,
-      `- **Auto Reconnect**: \`${this.config.feishu.wsAutoReconnect ? "yes" : "no"}\``,
-      `- **Logger Level**: \`${this.config.feishu.wsLoggerLevel}\``,
-      `- **Last Reconnect Started**: ${this.formatAnyTimestamp(diagnostics.lastReconnectStartedAt, "(never)")}`,
-      `- **Last Ws Ready**: ${this.formatAnyTimestamp(diagnostics.lastWsReadyAt)}`,
-      `- **Last Inbound Message**: ${this.formatAnyTimestamp(diagnostics.lastInboundMessageAt)}`,
-      `- **Last Inbound Message Id**: \`${diagnostics.lastInboundMessageId || "(unknown)"}\``
+      `- **Reconnect count**: \`${diagnostics.reconnectCount}\``,
+      `- **Auto reconnect**: \`${this.config.feishu.wsAutoReconnect ? "yes" : "no"}\``,
+      `- **Logger level**: \`${this.config.feishu.wsLoggerLevel}\``,
+      `- **Last reconnect started**: ${this.formatAnyTimestamp(diagnostics.lastReconnectStartedAt, "(never)")}`,
+      `- **Last ws ready**: ${this.formatAnyTimestamp(diagnostics.lastWsReadyAt)}`,
+      `- **Last inbound message**: ${this.formatAnyTimestamp(diagnostics.lastInboundMessageAt)}`,
+      `- **Last inbound message Id**: \`${diagnostics.lastInboundMessageId || "(unknown)"}\``
     ].join("\n");
   }
 
@@ -1797,12 +1828,12 @@ export class App {
     return [
       "# Feishu Send",
       "",
-      `- **Retry Max Attempts**: \`${this.config.feishu.sendRetryMaxAttempts}\``,
-      `- **Retry Base Delay Ms**: \`${this.config.feishu.sendRetryBaseDelayMs}\``,
-      `- **Outbound Retries**: \`${diagnostics.outboundRetryCount}\``,
-      `- **Outbound Failures**: \`${diagnostics.outboundFailureCount}\``,
-      `- **Active Streaming Cards**: \`${diagnostics.activeStreamingCards}\``,
-      `- **Last Send Error**: ${diagnostics.lastSendError || "(none)"}`
+      `- **Retry max attempts**: \`${this.config.feishu.sendRetryMaxAttempts}\``,
+      `- **Retry base delay ms**: \`${this.config.feishu.sendRetryBaseDelayMs}\``,
+      `- **Outbound retries**: \`${diagnostics.outboundRetryCount}\``,
+      `- **Outbound failures**: \`${diagnostics.outboundFailureCount}\``,
+      `- **Active streaming cards**: \`${diagnostics.activeStreamingCards}\``,
+      `- **Last send error**: ${diagnostics.lastSendError || "(none)"}`
     ].join("\n");
   }
 
@@ -1831,8 +1862,8 @@ export class App {
       "# Feishu Doctor",
       "",
       `- **Verdict**: ${this.formatFeishuDoctorVerdict(diagnostics)}`,
-      `- **Ws Summary**: ${this.formatFeishuWsSummary(diagnostics)}`,
-      `- **Send Summary**: ${this.formatFeishuSendSummary(diagnostics)}`,
+      `- **Ws summary**: ${this.formatFeishuWsSummary(diagnostics)}`,
+      `- **Send summary**: ${this.formatFeishuSendSummary(diagnostics)}`,
       "",
       "## Findings",
       "",
@@ -1923,12 +1954,12 @@ export class App {
       "",
       "## Options",
       "",
-      "**Select Session**",
+      "**Select session**",
       "- `<session-id>` — bind one specific session ID",
       "- `--last` — bind the most recent session in the current scope",
       "- `-n <index>` — bind the Nth session from the current `/session list` ordering",
       "",
-      "**List Scope**",
+      "**List scope**",
       "- `--list` — show the current resumable session list",
       "- `--all` — expand browsing beyond the current project for `--list`",
       "- `--project <path>` — scope `--list` browsing to one project path",
