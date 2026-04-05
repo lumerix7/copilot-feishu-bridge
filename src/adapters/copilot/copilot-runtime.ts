@@ -361,8 +361,8 @@ export class AcpCopilotBackend implements CopilotBackend {
     return { runId, done };
   }
 
-  async compact(sessionId: string): Promise<{ success: boolean; tokensRemoved: number; messagesRemoved: number }> {
-    return this.acpClient.compactSession(sessionId);
+  async compact(sessionId: string, workingDirectory?: string): Promise<{ success: boolean; tokensRemoved: number; messagesRemoved: number }> {
+    return this.acpClient.compactSession(sessionId, workingDirectory);
   }
 
   async stop(runId: string): Promise<boolean> {
@@ -436,8 +436,8 @@ export class AcpCopilotBackend implements CopilotBackend {
     return this.acpClient.probeSessionModelInfo(sessionId, workingDirectory);
   }
 
-  async setSessionModel(sessionId: string, model: string, reasoningEffort?: "low" | "medium" | "high" | "xhigh"): Promise<void> {
-    await this.acpClient.setSessionModel(sessionId, model, reasoningEffort);
+  async setSessionModel(sessionId: string, model: string, reasoningEffort?: "low" | "medium" | "high" | "xhigh", workingDirectory?: string): Promise<void> {
+    await this.acpClient.setSessionModel(sessionId, model, reasoningEffort, workingDirectory);
   }
 
   async shutdown(): Promise<void> {

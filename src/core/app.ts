@@ -648,6 +648,9 @@ export class App {
       const binding = this.makeBinding(key, targetSessionId, resolvedProject, existing);
       await this.store.put(binding);
 
+      // Probe model info in background so /status shows the real model before the first turn
+      void this.copilot.probeSessionModelInfo(targetSessionId, resolvedProject).catch(() => {});
+
       // --messages: fetch and append last N conversation turns (default from config)
       const messageCount = messagesArg !== undefined
         ? parseInt(messagesArg, 10)
@@ -813,6 +816,7 @@ export class App {
         return this.renderCommandError("Compact", `Unknown argument: \`${command.args[0]}\``, "`/compact [-h|--help]`");
       }
       const sessionId = existing?.copilotSessionId;
+      const project = existing?.project || this.config.project.defaultProject;
       if (!sessionId) {
         return "No session is currently bound. Use `/new` or `/resume` first.";
       }
@@ -821,7 +825,7 @@ export class App {
       }
       await sendEarlyUpdate(`Compacting session \`${sessionId}\`...`);
       try {
-        const result = await this.copilot.compact(sessionId);
+        const result = await this.copilot.compact(sessionId, project);
         return [
           "# Compact",
           "",
@@ -858,6 +862,7 @@ export class App {
 
       const reasoningArg = modelArgs.takeOption("--reasoning");
       const sessionId = existing?.copilotSessionId;
+      const project = existing?.project || this.config.project.defaultProject;
       const sessionInfo = sessionId ? this.copilot.getSessionModelInfo(sessionId) : undefined;
       const currentModel = sessionInfo?.model ?? "(from ACP)";
       const currentEffort = sessionInfo?.reasoningEffort || (reasoningArg === undefined ? this.conversationReasoningEffort.get(key) : undefined);
@@ -885,7 +890,7 @@ export class App {
         const nextModel = modelArgs.remainingText();
         if (sessionId) {
           await sendEarlyUpdate(`Switching model to \`${nextModel}\`${nextEffort ? ` (effort: ${nextEffort})` : ""}...`);
-          await this.copilot.setSessionModel(sessionId, nextModel, nextEffort);
+          await this.copilot.setSessionModel(sessionId, nextModel, nextEffort, project);
           const effortLine = nextEffort ? `\n- **Effort**: \`${nextEffort}\`` : "";
           return `# Model\n\n- **Model**: \`${nextModel}\`${effortLine}`;
         }

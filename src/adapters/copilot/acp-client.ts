@@ -22,12 +22,14 @@ export interface SessionModelInfo {
 export class AcpClient {
   private client: CopilotClient | null = null;
   private sessions = new Map<string, CopilotSession>();
+  private sessionWorkingDirectory = new Map<string, string>();
   private sessionModelInfo = new Map<string, SessionModelInfo>();
 
   private getOrCreateClient(): CopilotClient {
     if (!this.client || this.client.getState() === 'error') {
       if (this.client && this.client.getState() === 'error') {
         this.sessions.clear();
+        this.sessionWorkingDirectory.clear();
         this.client.forceStop().catch(() => {});
       }
       this.client = new CopilotClient({
@@ -123,7 +125,13 @@ export class AcpClient {
     reasoningEffort?: "low" | "medium" | "high" | "xhigh",
   ): Promise<CopilotSession> {
     const existing = this.sessions.get(sessionId);
-    if (existing) return existing;
+    // Evict cached session if workingDirectory has changed so the next resume
+    // picks up the new project directory as the session cwd.
+    if (existing && workingDirectory && this.sessionWorkingDirectory.get(sessionId) !== workingDirectory) {
+      this.sessions.delete(sessionId);
+      await existing.disconnect().catch(() => {});
+    }
+    if (this.sessions.has(sessionId)) return this.sessions.get(sessionId)!;
 
     const client = this.getOrCreateClient();
     const config: ResumeSessionConfig = {
@@ -134,6 +142,7 @@ export class AcpClient {
     };
     const session = await client.resumeSession(sessionId, config);
     this.sessions.set(sessionId, session);
+    if (workingDirectory) this.sessionWorkingDirectory.set(sessionId, workingDirectory);
     this.attachModelTracking(session);
     void this.seedModelInfoFromHistory(session);
     return session;
@@ -153,6 +162,7 @@ export class AcpClient {
     };
     const session = await client.createSession(config);
     this.sessions.set(session.sessionId, session);
+    this.sessionWorkingDirectory.set(session.sessionId, workingDirectory);
     this.attachModelTracking(session);
     void this.seedModelInfoFromHistory(session);
     return session;
@@ -162,14 +172,9 @@ export class AcpClient {
     sessionId: string,
     model: string,
     reasoningEffort?: "low" | "medium" | "high" | "xhigh",
+    workingDirectory?: string,
   ): Promise<void> {
-    let session = this.sessions.get(sessionId);
-    if (!session) {
-      const client = this.getOrCreateClient();
-      session = await client.resumeSession(sessionId, { onPermissionRequest: approveAll });
-      this.sessions.set(sessionId, session);
-      this.attachModelTracking(session);
-    }
+    const session = await this.getOrResumeSession(sessionId, workingDirectory);
     await session.setModel(model, reasoningEffort ? { reasoningEffort } : undefined);
   }
 
@@ -186,6 +191,7 @@ export class AcpClient {
     if (session) {
       await session.disconnect().catch(() => {});
       this.sessions.delete(sessionId);
+      this.sessionWorkingDirectory.delete(sessionId);
     }
     const client = this.getOrCreateClient();
     await client.deleteSession(sessionId);
@@ -212,15 +218,19 @@ export class AcpClient {
   }
 
   async getSessionMessages(sessionId: string): Promise<SessionEvent[]> {
-    // Reuse cached session or do a minimal resume just to read history
+    // Use cached session if available; otherwise do a temporary resume (read-only, no caching)
+    // to avoid polluting the session cache without a workingDirectory.
     let session = this.sessions.get(sessionId);
+    let temporary = false;
     if (!session) {
       const client = this.getOrCreateClient();
-      session = await client.resumeSession(sessionId, { onPermissionRequest: approveAll });
-      this.sessions.set(sessionId, session);
-      this.attachModelTracking(session);
+      session = await client.resumeSession(sessionId, { onPermissionRequest: approveAll, disableResume: true });
+      temporary = true;
     }
     const messages = await session.getMessages();
+    if (temporary) {
+      await session.disconnect().catch(() => {});
+    }
     // seed model info from history while we have the messages
     if (!this.sessionModelInfo.has(sessionId)) {
       for (let i = messages.length - 1; i >= 0; i--) {
@@ -236,16 +246,11 @@ export class AcpClient {
 
   removeSession(sessionId: string): void {
     this.sessions.delete(sessionId);
+    this.sessionWorkingDirectory.delete(sessionId);
   }
 
-  async compactSession(sessionId: string): Promise<{ success: boolean; tokensRemoved: number; messagesRemoved: number }> {
-    let session = this.sessions.get(sessionId);
-    if (!session) {
-      const client = this.getOrCreateClient();
-      session = await client.resumeSession(sessionId, { onPermissionRequest: approveAll });
-      this.sessions.set(sessionId, session);
-      this.attachModelTracking(session);
-    }
+  async compactSession(sessionId: string, workingDirectory?: string): Promise<{ success: boolean; tokensRemoved: number; messagesRemoved: number }> {
+    const session = await this.getOrResumeSession(sessionId, workingDirectory);
     return session.rpc.compaction.compact();
   }
 
@@ -271,6 +276,7 @@ export class AcpClient {
       await this.client.stop().catch(() => {});
       this.client = null;
       this.sessions.clear();
+      this.sessionWorkingDirectory.clear();
     }
   }
 }
