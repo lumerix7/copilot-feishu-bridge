@@ -90,7 +90,7 @@ All commands are slash commands in a Feishu DM to the bot.
 
 ### Copilot
 
-- `/model [--list [--no-hidden] | <name>] [--reasoning <level>]` show or change model / reasoning effort
+- `/model [list [--no-hidden] | <name>] [--reasoning <level>] [-h|--help]` show, list, or change the Copilot model and reasoning effort for the current session
 - `/system [clear|<text>]` show, set, or clear the system prompt for this conversation
 
 ### Project

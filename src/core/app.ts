@@ -340,13 +340,13 @@ export class App {
         "- `/status [check-update] [-h|--help]` show current session and run state; `check-update` checks npm versions",
         "- `/new [-C <dir>] [-h|--help]` create and bind a fresh Copilot session",
         "- `/session [list [-n <count>] [--all] [--project <path>]] [-h|--help]` show the current session or browse recent sessions",
-        "- `/resume [<session-id>|--last|-n <index>|--list] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session",
+        "- `/resume [list|<session-id>|--last|-n <index>] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session",
         "- `/compact` compact the current bound Copilot session",
         "- `/stop` stop the current active run",
         "",
         "## Copilot",
         "",
-        "- `/model [--list [--no-hidden] | <name>] [--reasoning <level>]` show or change model / reasoning effort",
+        "- `/model [list [--no-hidden] | <name>] [--reasoning <level>] [-h|--help]` show, list, or change the Copilot model and reasoning effort for the current session",
         "- `/system [clear|<text>]` show, set, or clear the system prompt for this conversation",
         "",
         "## Project",
@@ -572,14 +572,18 @@ export class App {
       const projectScopeArg = resumeArgs.takeOption("--project");
       const cdArg = resumeArgs.takeOption("-C", "--cd");
       const messagesArg = resumeArgs.takeOption("--messages");
-      const showList = resumeArgs.takeFlag("--list");
 
       const scopedProject = projectScopeArg
         ? await this.resolveProject(projectScopeArg, currentProject)
         : currentProject;
       const listProject = allProjects ? undefined : scopedProject;
 
-      if (showList) {
+      const wantsList = resumeArgs.peek() === "list";
+      if (wantsList) {
+        resumeArgs.shift();
+      }
+
+      if (wantsList) {
         const sessions = await this.listSessionsForDisplay(this.config.copilot.sessionListMaxCount, listProject);
         if (sessions.length === 0) {
           return this.noSessionsText(scopedProject);
@@ -850,7 +854,7 @@ export class App {
       }
 
       const noHidden = modelArgs.takeFlag("--no-hidden");
-      if (modelArgs.peek() === "--list") {
+      if (modelArgs.peek() === "list") {
         modelArgs.shift();
         await sendEarlyUpdate("Fetching Copilot model list...");
         const models = await this.copilot.listModels().catch(() => []);
@@ -869,7 +873,7 @@ export class App {
 
       if (modelArgs.isEmpty() && reasoningArg === undefined) {
         const effortLine = currentEffort ? `\n- **Effort**: \`${currentEffort}\`` : "";
-        return `# Model\n\n- **Model**: \`${currentModel}\`${effortLine}`;
+        return `# 🧠 Model\n\n- **Model**: \`${currentModel}\`${effortLine}`;
       }
       if (activeRun) {
         return `Cannot change model while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
@@ -892,13 +896,13 @@ export class App {
           await sendEarlyUpdate(`Switching model to \`${nextModel}\`${nextEffort ? ` (effort: ${nextEffort})` : ""}...`);
           await this.copilot.setSessionModel(sessionId, nextModel, nextEffort, project);
           const effortLine = nextEffort ? `\n- **Effort**: \`${nextEffort}\`` : "";
-          return `# Model\n\n- **Model**: \`${nextModel}\`${effortLine}`;
+          return `# 🧠 Model\n\n- **Model**: \`${nextModel}\`${effortLine}`;
         }
         return `No active session — start a conversation first to change the model.`;
       }
 
       const effortLine = nextEffort ? `\n- **Effort**: \`${nextEffort}\`` : "";
-      return `# Model\n\n- **Model**: \`${currentModel}\`${effortLine}`;
+      return `# 🧠 Model\n\n- **Model**: \`${currentModel}\`${effortLine}`;
     }
 
     if (command?.name === "project") {
@@ -1196,7 +1200,7 @@ export class App {
       case "resume": return "↩️";
       case "stop": return "⏹️";
       case "compact": return "🗜️";
-      case "model": return "🤖";
+      case "model": return "🧠";
       case "system": return "⚙️";
       case "project": return "📁";
       case "log": return "📜";
@@ -1946,7 +1950,7 @@ export class App {
       "",
       "## Usage",
       "",
-      "- `/resume [<session-id>|--last|-n <index>|--list] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>]`",
+      "- `/resume [list|<session-id>|--last|-n <index>] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>]`",
       "- `/resume -h|--help`",
       "",
       "## Options",
@@ -1957,9 +1961,9 @@ export class App {
       "- `-n <index>` — bind the Nth session from the current `/session list` ordering",
       "",
       "**List scope**",
-      "- `--list` — show the current resumable session list",
-      "- `--all` — expand browsing beyond the current project for `--list`",
-      "- `--project <path>` — scope `--list` browsing to one project path",
+      "- `list` — show the current resumable session list",
+      "- `--all` — expand browsing beyond the current project for `list`",
+      "- `--project <path>` — scope `list` browsing to one project path",
       "",
       "**Project**",
       "- `-C, --cd <dir>` — keep the resumed session in that project only when it matches the session project",
@@ -2029,14 +2033,17 @@ export class App {
 
   private modelHelpText(): string {
     return [
-      "# Model",
-      "",
-      "Show or change the Copilot model and reasoning effort for this conversation.",
+      "# 🧠 Model",
       "",
       "## Usage",
       "",
-      "- `/model [--list [--no-hidden] | <name>] [--reasoning <level>]`",
+      "- `/model [list [--no-hidden] | <name>] [--reasoning <level>]`",
       "- `/model -h|--help`",
+      "",
+      "## Options",
+      "",
+      "- `list` show available Copilot model IDs",
+      "- `--no-hidden` hide models marked as non-public",
       "",
       "## Effort Levels",
       "",
@@ -2076,7 +2083,7 @@ export class App {
     if (models.length > 0) {
       const sorted = [...models].sort((a, b) => a.id.localeCompare(b.id));
       const lines = [
-        "# Model List",
+        "# 🧠 Model List",
         "",
         "| # | Model | Reasoning | Input | Context | Premium | Notes |",
         "| --- | --- | --- | --- | --- | --- | --- |"
@@ -2101,7 +2108,7 @@ export class App {
       ].join("\n");
     }
     return [
-      "# Model List",
+      "# 🧠 Model List",
       "",
       "- Live model list unavailable.",
       "- Use `/model <name>` to switch for this session."
