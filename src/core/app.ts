@@ -1532,12 +1532,14 @@ export class App {
       "| --- | --- | --- | --- | --- | --- |"
     ];
     for (const [index, session] of sessions.entries()) {
+      const isCurrentSession = session.sessionId === boundSessionId;
       const flags = [
-        session.sessionId === boundSessionId ? "bound" : "",
+        isCurrentSession ? "current" : "",
+        isCurrentSession ? "bound" : "",
         session.isRemote ? "remote" : ""
       ].filter(Boolean);
       lines.push(
-        `| ${index + 1} | ${escapeMarkdownCell(session.cwd || "(unknown)")} | ${escapeMarkdownCell(this.formatAnyTimestamp(session.modifiedAt ?? session.createdAt))} | ${escapeMarkdownCell(session.sessionId)} | ${escapeMarkdownCell(session.preview || "(no preview)")} | ${escapeMarkdownCell(flags.join(", ") || "-")} |`
+        `| ${index + 1} | ${escapeMarkdownCell(session.cwd || "(unknown)")} | ${escapeMarkdownCell(this.formatAnyTimestamp(session.modifiedAt ?? session.createdAt))} | ${escapeMarkdownCell(session.sessionId)} | ${escapeMarkdownCell(session.preview || "(no preview)")} | ${escapeMarkdownCell(flags.length > 0 ? flags.map((flag) => this.formatListFlag(flag)).join(", ") : "-")} |`
       );
     }
     return lines.join("\n");
@@ -1561,10 +1563,14 @@ export class App {
         item.known && !item.bound ? "known" : ""
       ].filter(Boolean);
       lines.push(
-        `| ${index + 1} | ${escapeMarkdownCell(item.name)} | ${escapeMarkdownCell(flags.join(", ") || "-")} | ${escapeMarkdownCell(item.updatedAt ? this.formatAnyTimestamp(item.updatedAt) : "-")} | ${escapeMarkdownCell(item.project)} |`
+        `| ${index + 1} | ${escapeMarkdownCell(item.name)} | ${escapeMarkdownCell(flags.length > 0 ? flags.map((flag) => this.formatListFlag(flag)).join(", ") : "-")} | ${escapeMarkdownCell(item.updatedAt ? this.formatAnyTimestamp(item.updatedAt) : "-")} | ${escapeMarkdownCell(item.project)} |`
       );
     }
     return lines.join("\n");
+  }
+
+  private formatListFlag(flag: string): string {
+    return flag === "current" ? `\`${flag}\`` : flag;
   }
 
   private parseLogQuery(args: string[]): LogQuery | Error {
