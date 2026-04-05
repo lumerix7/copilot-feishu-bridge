@@ -16,7 +16,6 @@ type LarkLogger = {
 const FEISHU_POST_SOFT_LIMIT = 3500;
 const FEISHU_CODEX_STREAM_PAGE_LIMIT = 3000;
 const STREAMING_MARKDOWN_ELEMENT_ID = "markdown_stream";
-const STREAMING_RAW_MARKDOWN_ELEMENT_ID = "markdown_raw";
 const STREAMING_FOOTER_ELEMENT_ID = "footer_meta";
 const STREAMING_LINE_DELAY_MS = 40;
 const STREAMING_MAX_LINE_UPDATES = 64;
@@ -148,14 +147,13 @@ export class FeishuGateway {
       }
       this.logChunkPlan("normal", message, plan);
       for (const page of plan.pages) {
-      await this.sendChunkWithRetry(
-        message.chatId,
-        page.text,
-        message.title,
-        message.template,
-        page.footer,
-        message.includeRawMarkdown
-      );
+        await this.sendChunkWithRetry(
+          message.chatId,
+          page.text,
+          message.title,
+          message.template,
+          page.footer
+        );
       }
     });
   }
@@ -325,31 +323,6 @@ export class FeishuGateway {
         active.lastText = rendered;
       }
 
-      if (active.hasRawMarkdownElement) {
-        const nextRawMarkdown = message.includeRawMarkdown !== false ? wrapRawMarkdown(rendered) : "";
-        if (nextRawMarkdown !== active.rawMarkdownContent) {
-          await this.withFeishuRetry(async () =>
-            this.client.cardkit.v1.cardElement.update({
-              path: {
-                card_id: active.cardId,
-                element_id: STREAMING_RAW_MARKDOWN_ELEMENT_ID
-              },
-              data: {
-                element: JSON.stringify({
-                  tag: "markdown",
-                  content: nextRawMarkdown,
-                  element_id: STREAMING_RAW_MARKDOWN_ELEMENT_ID
-                }),
-                sequence: active.sequence
-              }
-            }),
-            "streaming raw markdown"
-          );
-          active.sequence += 1;
-          active.rawMarkdownContent = nextRawMarkdown;
-        }
-      }
-
       if (message.finalizeStreaming) {
         await this.withFeishuRetry(async () =>
           this.client.cardkit.v1.card.settings({
@@ -379,9 +352,7 @@ export class FeishuGateway {
       cardId: active.cardId,
       streamKey,
       final: Boolean(message.finalizeStreaming),
-      includeRawMarkdown: message.includeRawMarkdown !== false,
-      rawMarkdownTag: active.hasRawMarkdownElement ? "MARKDOWN_CONTENT" : "(disabled)",
-      rawMarkdownPreview: active.hasRawMarkdownElement ? previewText(active.rawMarkdownContent) : "(disabled)",
+      bodyFormat: message.bodyFormat || "normal",
       textPreview: previewText(rendered),
       footerPreview: previewText(message.footer || buildCardMetaMarkdown(message.title))
     });
@@ -413,28 +384,6 @@ export class FeishuGateway {
         }
       }
 
-      if (active.hasRawMarkdownElement) {
-        await this.withFeishuRetry(async () =>
-          this.client.cardkit.v1.cardElement.update({
-            path: {
-              card_id: active.cardId,
-              element_id: STREAMING_RAW_MARKDOWN_ELEMENT_ID
-            },
-            data: {
-              element: JSON.stringify({
-                tag: "markdown",
-                content: wrapRawMarkdown(rendered),
-                element_id: STREAMING_RAW_MARKDOWN_ELEMENT_ID
-              }),
-              sequence: active.sequence
-            }
-          }),
-          "streaming raw markdown"
-        );
-        active.sequence += 1;
-        active.rawMarkdownContent = wrapRawMarkdown(rendered);
-      }
-
       await this.withFeishuRetry(async () =>
         this.client.cardkit.v1.card.settings({
           path: {
@@ -458,9 +407,7 @@ export class FeishuGateway {
     console.log("Feishu outbound streaming card sent", {
       chatId: message.chatId,
       cardId: active.cardId,
-      includeRawMarkdown: message.includeRawMarkdown !== false,
-      rawMarkdownTag: active.hasRawMarkdownElement ? "MARKDOWN_CONTENT" : "(disabled)",
-      rawMarkdownPreview: active.hasRawMarkdownElement ? previewText(active.rawMarkdownContent) : "(disabled)",
+      bodyFormat: message.bodyFormat || "normal",
       textPreview: previewText(rendered),
       footerPreview: previewText(message.footer || buildCardMetaMarkdown(message.title))
     });
@@ -468,7 +415,7 @@ export class FeishuGateway {
   }
 
   private async createStreamingCard(message: OutgoingMessage): Promise<ActiveStreamingCard> {
-    const rendered = (message.text || "").trim();
+    const rendered = renderOutgoingBody(message.text || "", message.bodyFormat);
     const footer = message.footer || buildCardMetaMarkdown(message.title);
     const summary = buildCardSummary(message.title, rendered);
     const card = await this.withFeishuRetry(async () =>
@@ -481,8 +428,7 @@ export class FeishuGateway {
               message.title,
               message.template,
               footer,
-              summary,
-              message.includeRawMarkdown !== false
+              summary
             )
           )
         }
@@ -517,9 +463,7 @@ export class FeishuGateway {
       cardId,
       sequence: 1,
       lastText: "",
-      chatId: message.chatId,
-      hasRawMarkdownElement: message.includeRawMarkdown !== false,
-      rawMarkdownContent: ""
+      chatId: message.chatId
     };
   }
 
@@ -564,16 +508,14 @@ export class FeishuGateway {
   async sendStartupReady(
     text: string,
     footer?: string,
-    title?: string,
-    includeRawMarkdown = false
+    title?: string
   ): Promise<void> {
     if (!this.config.startupNotifyChatId) return;
     await this.send({
       chatId: this.config.startupNotifyChatId,
       title,
       text,
-      footer,
-      includeRawMarkdown
+      footer
     });
   }
 
@@ -600,8 +542,7 @@ export class FeishuGateway {
     chunk: string,
     title?: string,
     template?: OutgoingMessage["template"],
-    footer?: string,
-    includeRawMarkdown = false
+    footer?: string
   ): Promise<void> {
     await this.withFeishuRetry(async () =>
       this.client.im.v1.message.create({
@@ -611,16 +552,13 @@ export class FeishuGateway {
         data: {
           receive_id: chatId,
           msg_type: "interactive",
-          content: buildInteractiveCardContent(chunk, title, template, footer, includeRawMarkdown)
+          content: buildInteractiveCardContent(chunk, title, template, footer)
         }
       }),
       "send"
     );
     console.log("Feishu outbound message sent", {
       chatId,
-      includeRawMarkdown,
-      rawMarkdownTag: includeRawMarkdown ? "MARKDOWN_CONTENT" : "(disabled)",
-      rawMarkdownPreview: includeRawMarkdown ? previewText(wrapRawMarkdown(chunk)) : "(disabled)",
       textPreview: previewText(chunk),
       footerPreview: previewText(footer || buildCardMetaMarkdown(title))
     });
@@ -777,8 +715,6 @@ interface ActiveStreamingCard {
   sequence: number;
   lastText: string;
   chatId: string;
-  hasRawMarkdownElement: boolean;
-  rawMarkdownContent: string;
 }
 
 interface ActivePagedStreamingState {
@@ -931,7 +867,7 @@ function splitMessageText(text: string, maxChars: number): string[] {
 }
 
 function buildRenderPlan(message: OutgoingMessage, maxChars: number): RenderPlan {
-  const text = message.text || "";
+  const text = renderOutgoingBody(message.text || "", message.bodyFormat);
   const pages = splitMessageText(text, maxChars);
   const skipFirstChunkFooter = hasStandalonePreamblePage(pages);
   const contentPageCount = skipFirstChunkFooter ? pages.length - 1 : pages.length;
@@ -949,6 +885,18 @@ function buildRenderPlan(message: OutgoingMessage, maxChars: number): RenderPlan
           )
     }))
   };
+}
+
+function renderOutgoingBody(text: string, bodyFormat?: OutgoingMessage["bodyFormat"]): string {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!bodyFormat) return normalized;
+  if (bodyFormat === "raw-markdown") {
+    return wrapRawMarkdown(normalized);
+  }
+  if (bodyFormat === "raw-text") {
+    return `\`\`\`text\n${normalized}\n\`\`\``;
+  }
+  return normalized;
 }
 
 function hasStandalonePreamblePage(pages: string[]): boolean {
@@ -1076,8 +1024,7 @@ function buildInteractiveCardContent(
   text: string,
   title?: string,
   template: OutgoingMessage["template"] = "blue",
-  footer?: string,
-  includeRawMarkdown = false
+  footer?: string
 ): string {
   const rendered = text.trim();
   const summary = buildCardSummary(title, rendered);
@@ -1109,10 +1056,6 @@ function buildInteractiveCardContent(
           tag: "markdown",
           content: rendered
         },
-        ...(includeRawMarkdown ? [{
-          tag: "markdown",
-          content: wrapRawMarkdown(rendered)
-        }] : []),
         {
           tag: "markdown",
           content: footer || meta
@@ -1127,8 +1070,7 @@ function buildStreamingCard(
   title?: string,
   template: OutgoingMessage["template"] = "blue",
   footer?: string,
-  summary?: string,
-  includeRawMarkdown = false
+  summary?: string
 ): Record<string, unknown> {
   return {
     schema: "2.0",
@@ -1174,11 +1116,6 @@ function buildStreamingCard(
           content: text,
           element_id: STREAMING_MARKDOWN_ELEMENT_ID
         },
-        ...(includeRawMarkdown ? [{
-          tag: "markdown",
-          content: "",
-          element_id: STREAMING_RAW_MARKDOWN_ELEMENT_ID
-        }] : []),
         {
           tag: "markdown",
           content: footer || buildCardMetaMarkdown(title),

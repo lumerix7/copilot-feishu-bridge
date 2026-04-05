@@ -10,7 +10,7 @@ import { AppConfig } from "../config/env.js";
 import { conversationKeyFor } from "./conversation-key.js";
 import { parseCommand } from "./command-router.js";
 import { BindingStore } from "../store/binding-store.js";
-import { ActiveRun, IncomingMessage, OutgoingMessage, SessionBinding } from "../types/domain.js";
+import { ActiveRun, IncomingMessage, OutgoingBodyFormat, OutgoingMessage, SessionBinding } from "../types/domain.js";
 
 const execFileAsync = promisify(execFile);
 const GIT_COMMAND_TIMEOUT_MS = 30_000;
@@ -34,6 +34,7 @@ type ProjectListEntry = {
 
 type AppResponse = {
   text: string;
+  bodyFormat?: OutgoingBodyFormat;
   severity?: "warning" | "error";
 };
 
@@ -121,7 +122,6 @@ export class App {
         const messageTitle = this.titleForCommand(commandName, message.text);
         const messageTemplate = this.templateForCommand(commandName);
         const messageFooter = this.footerForMessage(commandName, msgKey, currentBinding);
-        const includeRawMarkdown = this.shouldIncludeRawMarkdownForMessage(commandName);
         const formatForFeishu = (text: string): string =>
           commandName ? this.stripLeadingMarkdownHeading(text) : text;
         try {
@@ -166,8 +166,7 @@ export class App {
                   text: statusText,
                   replyToMessageId: message.messageId,
                   threadId: message.threadId,
-                  streaming: false,
-                  includeRawMarkdown
+                  streaming: false
                 });
               } catch (error) {
                 console.error("failed to send Feishu update", {
@@ -197,7 +196,6 @@ export class App {
                 template: messageTemplate,
                 footer: this.footerForCopilotReply(msgKey, latestBinding),
                 text: snapshot,
-                includeRawMarkdown,
                 replyToMessageId: message.messageId,
                 threadId: message.threadId,
                 streaming: true,
@@ -241,6 +239,7 @@ export class App {
 
           const result = await this.handleIncoming(message, sendUpdateSafely, sendStatusSafely);
           const text = typeof result === "string" ? result : result.text;
+          const responseBodyFormat = typeof result === "string" ? undefined : result.bodyFormat;
           const responseSeverity = typeof result === "string" ? undefined : result.severity;
           await statusChain;
           await streamDrain;
@@ -276,7 +275,7 @@ export class App {
               replyToMessageId: message.messageId,
               threadId: message.threadId,
               streaming: true,
-              includeRawMarkdown,
+              bodyFormat: responseBodyFormat,
               ...(commandName ? {} : { streamKey, finalizeStreaming: true, suppressChunkFooter: true, preserveStreamingPages: true })
             });
           }
@@ -295,7 +294,6 @@ export class App {
               template: "red",
               footer: this.buildFooter(msgKey, currentBinding),
               text: `bridge error: ${text}`,
-              includeRawMarkdown: false,
               replyToMessageId: message.messageId,
               threadId: message.threadId
             });
@@ -331,15 +329,25 @@ export class App {
     }
     const command = parsedCommand;
     if (command?.name === "help") {
-      return [
+      const helpArgs = new ArgCursor(command.args);
+      helpArgs.takeFlag("-h", "--help");
+      const rawMarkdownOnly = helpArgs.takeFlag("--raw-markdown");
+      if (!helpArgs.isEmpty()) {
+        return this.renderCommandError(
+          "Help",
+          `unsupported help argument \`${helpArgs.peek()}\``,
+          "`/help [--raw-markdown]`"
+        );
+      }
+      return this.withBodyFormat([
         "# Bridge Help",
         "",
         "## Core",
         "",
-        "- `/help` show commands",
+        "- `/help [--raw-markdown]` show commands",
         "- `/status [check-update] [-h|--help]` show current session and run state; `check-update` checks npm versions",
         "- `/new [-C <dir>] [-h|--help]` create and bind a fresh Copilot session",
-        "- `/session [list [-n <count>] [--all] [--project <path>]] [-h|--help]` show the current session or browse recent sessions",
+        "- `/session [list [-n <count>] [--all] [--project <path>]] [--raw-markdown] [-h|--help]` show the current session or browse recent sessions",
         "- `/resume [list|<session-id>|--last|-n <index>] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session",
         "- `/compact` compact the current bound Copilot session",
         "- `/stop` stop the current active run",
@@ -366,8 +374,12 @@ export class App {
           ...Object.entries(this.config.commands.map).map(([alias, bin]) =>
             `- \`/${alias}\` run \`${bin || alias}\``
           )
-        ] : []
-      ].join("\n");
+        ] : [],
+        "",
+        "## Notes",
+        "",
+        "- Add `--raw-markdown` to `/help` or `/session` to return fenced source markdown instead of rendered markdown."
+      ].join("\n"), rawMarkdownOnly ? "raw-markdown" : undefined);
     }
 
     const key = conversationKeyFor(message);
@@ -689,8 +701,10 @@ export class App {
 
     if (command?.name === "session") {
       const sessionArgs = new ArgCursor(command.args);
+      const rawMarkdownOnly = sessionArgs.takeFlag("--raw-markdown");
+      const sessionBodyFormat: OutgoingBodyFormat | undefined = rawMarkdownOnly ? "raw-markdown" : undefined;
       if (sessionArgs.peek() === "-h" || sessionArgs.peek() === "--help") {
-        return this.sessionsHelpText();
+        return this.withBodyFormat(this.sessionsHelpText(), sessionBodyFormat);
       }
       const currentProject = existing?.project || this.config.project.defaultProject;
 
@@ -698,7 +712,10 @@ export class App {
         sessionArgs.shift();
         const projectScopeArg = sessionArgs.takeOption("--project");
         if (projectScopeArg === "") {
-          return this.renderCommandError("Session", "missing value for `--project <path>`", "`/session list [-n <count>] [--all] [--project <path>]`");
+          return this.withBodyFormat(
+            this.renderCommandError("Session", "missing value for `--project <path>`", "`/session list [-n <count>] [--all] [--project <path>] [--raw-markdown]`"),
+            sessionBodyFormat
+          );
         }
         const allProjects = sessionArgs.takeFlag("--all");
         const countArg = sessionArgs.takeOption("-n");
@@ -709,7 +726,10 @@ export class App {
         if (countArg !== undefined) {
           const parsed = parseInt(countArg, 10);
           if (!Number.isFinite(parsed) || parsed < 1 || parsed > 1000) {
-            return this.renderCommandError("Session", "`-n` must be a number between 1 and 1000", "`/session list [-n <count>] [--all] [--project <path>]`");
+            return this.withBodyFormat(
+              this.renderCommandError("Session", "`-n` must be a number between 1 and 1000", "`/session list [-n <count>] [--all] [--project <path>] [--raw-markdown]`"),
+              sessionBodyFormat
+            );
           }
           limit = parsed;
         } else {
@@ -719,40 +739,40 @@ export class App {
         }
         const leftoverListArgs = sessionArgs.remaining();
         if (leftoverListArgs.length > 0) {
-          return leftoverListArgs[0].startsWith("/")
+          return this.withBodyFormat(leftoverListArgs[0].startsWith("/")
             ? this.renderCommandError(
                 "Session",
                 "use `--project <path>` to filter sessions by project path",
-                "`/session list --project <path> [-n <count>] [--all]`"
+                "`/session list --project <path> [-n <count>] [--all] [--raw-markdown]`"
               )
             : this.renderCommandError(
                 "Session",
                 `unsupported session list argument \`${leftoverListArgs[0]}\``,
-                "`/session list [-n <count>] [--all] [--project <path>]`"
-              );
+                "`/session list [-n <count>] [--all] [--project <path>] [--raw-markdown]`"
+              ), sessionBodyFormat);
         }
         const sessions = await this.listSessionsForDisplay(limit, allProjects ? undefined : scopedProject);
         if (sessions.length === 0) {
-          return this.noSessionsText(scopedProject);
+          return this.withBodyFormat(this.noSessionsText(scopedProject), sessionBodyFormat);
         }
-        return this.renderSessionList("Sessions", sessions, existing?.copilotSessionId);
+        return this.withBodyFormat(this.renderSessionList("Sessions", sessions, existing?.copilotSessionId), sessionBodyFormat);
       }
 
       if (!sessionArgs.isEmpty()) {
-        return this.renderCommandError(
+        return this.withBodyFormat(this.renderCommandError(
           "Session",
           `unsupported session subcommand \`${sessionArgs.peek()}\``,
-          "`/session [list [-n <count>] [--all] [--project <path>]] [-h|--help]`"
-        );
+          "`/session [list [-n <count>] [--all] [--project <path>]] [--raw-markdown] [-h|--help]`"
+        ), sessionBodyFormat);
       }
 
       if (!existing?.copilotSessionId) {
-        return "No session is currently bound. Use `/new`, `/resume`, or `/session list`.";
+        return this.withBodyFormat("No session is currently bound. Use `/new`, `/resume`, or `/session list`.", sessionBodyFormat);
       }
       const sessionMeta = (await this.copilot.listSessions()).find((s) => s.sessionId === existing.copilotSessionId);
       const sessionInfo = existing.copilotSessionId ? this.copilot.getSessionModelInfo(existing.copilotSessionId) : undefined;
       const project = existing.project || this.config.project.defaultProject;
-      return [
+      return this.withBodyFormat([
         "# Current Session",
         "",
         `- **Session**: \`${existing.copilotSessionId}\``,
@@ -761,7 +781,7 @@ export class App {
         `- **Time**: ${this.formatAnyTimestamp(sessionMeta?.startTime?.toISOString())}`,
         `- **Cwd**: \`${sessionMeta?.context?.cwd || "(unknown)"}\``,
         `- **Last message**: ${sessionMeta?.summary || "(no preview)"}`
-      ].join("\n");
+      ].join("\n"), sessionBodyFormat);
     }
 
     if (command?.name === "new") {
@@ -1112,7 +1132,7 @@ export class App {
         ...(binding?.project ? [`- **Current project**: \`${binding.project}\``] : []),
         ...(feishuDiagnostics ? [`- **Feishu**: ${this.formatFeishuStatusSummary(feishuDiagnostics)}`] : [])
       ].join("\n");
-      await this.feishu?.sendStartupReady(text, this.buildFooter(undefined, binding), title, false);
+      await this.feishu?.sendStartupReady(text, this.buildFooter(undefined, binding), title);
       console.log(logLabel, { chatId: this.config.feishu.startupNotifyChatId });
     } catch (error) {
       console.error(`failed to send ${title.toLowerCase()} notification`, error);
@@ -1333,8 +1353,21 @@ export class App {
     return `${this.buildIsoFooter()}  |  ${parts.join(" · ")}`;
   }
 
-  private shouldIncludeRawMarkdownForMessage(commandName?: string): boolean {
-    return commandName === "help";
+  private withBodyFormat(
+    result: string | AppResponse,
+    bodyFormat?: OutgoingBodyFormat
+  ): string | AppResponse {
+    if (!bodyFormat) return result;
+    if (typeof result === "string") {
+      return {
+        text: result,
+        bodyFormat
+      };
+    }
+    return {
+      ...result,
+      bodyFormat
+    };
   }
 
   private buildIsoFooter(): string {
@@ -1979,8 +2012,8 @@ export class App {
       "",
       "## Usage",
       "",
-      "- `/session [list [-n <count>] [--all] [--project <path>]]`",
-      "- `/session -h|--help`",
+      "- `/session [list [-n <count>] [--all] [--project <path>]] [--raw-markdown]`",
+      "- `/session -h|--help [--raw-markdown]`",
       "",
       "## Options",
       "",
@@ -1988,7 +2021,8 @@ export class App {
       "- `list` — browse recent sessions",
       "- `-n <count>` — limit the list size; accepts values from 1 to 1000",
       "- `--all` — include sessions from all projects",
-      "- `--project <path>` — filter to one specific project path"
+      "- `--project <path>` — filter to one specific project path",
+      "- `--raw-markdown` — return fenced source markdown instead of rendered markdown"
     ].join("\n");
   }
 
