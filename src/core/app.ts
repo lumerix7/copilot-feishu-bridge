@@ -113,7 +113,7 @@ export class App {
     this.feishu = new FeishuGateway(this.config.feishu);
     await this.feishu.start(
       async (message) => {
-        const parsedCommand = parseCommand(message);
+        const parsedCommand = parseCommand(message, this.configuredLocalCommandNames());
         const command = parsedCommand && "args" in parsedCommand ? parsedCommand : undefined;
         const currentBinding = await this.store.get(conversationKeyFor(message));
         const msgKey = conversationKeyFor(message);
@@ -320,7 +320,7 @@ export class App {
       return "Only direct messages are supported right now.";
     }
 
-    const parsedCommand = parseCommand(message);
+    const parsedCommand = parseCommand(message, this.configuredLocalCommandNames());
     if (parsedCommand && "parseError" in parsedCommand) {
       const title = parsedCommand.name ? this.commandBaseTitle(parsedCommand.name) : "Command";
       return this.renderCommandError(
@@ -353,12 +353,20 @@ export class App {
         "",
         "- `/project [list|bind [<path>|-n <index>|-m]|unbind <path>] [-h|--help]` show the current project or manage project bindings",
         "- `/git [args...]` run `git` directly in the current bound project",
-        "- `/cat`, `/cp`, `/find`, `/head`, `/ln`, `/ls`, `/mkdir`, `/mv`, `/pwd`, `/readlink`, `/rg`, `/rmdir`, `/sha256sum`, `/tail`, `/tar`, `/touch`, `/trash`, `/trash-list`, `/trash-restore`, `/tree`, `/wc` run local project commands",
+        `- ${this.localProjectCommandHelpText()} run local project commands`,
         "",
         "## Diagnostics",
         "",
         "- `/feishu [ws|send|doctor]` show Feishu websocket and outbound send diagnostics",
-        "- `/log [-n <count>]` show recent bridge service logs from systemd journal"
+        "- `/log [-n <count>]` show recent bridge service logs from systemd journal",
+        ...this.configuredLocalCommandNames().length > 0 ? [
+          "",
+          "## Mapped",
+          "",
+          ...Object.entries(this.config.commands.map).map(([alias, bin]) =>
+            `- \`/${alias}\` run \`${bin || alias}\``
+          )
+        ] : []
       ].join("\n");
     }
 
@@ -978,33 +986,12 @@ export class App {
       return this.runGitCommand(project, command.args);
     }
 
-    if (
-      command?.name === "cat" ||
-      command?.name === "cp" ||
-      command?.name === "find" ||
-      command?.name === "head" ||
-      command?.name === "ls" ||
-      command?.name === "ln" ||
-      command?.name === "mkdir" ||
-      command?.name === "mv" ||
-      command?.name === "pwd" ||
-      command?.name === "readlink" ||
-      command?.name === "rg" ||
-      command?.name === "rmdir" ||
-      command?.name === "sha256sum" ||
-      command?.name === "tail" ||
-      command?.name === "tar" ||
-      command?.name === "touch" ||
-      command?.name === "trash" ||
-      command?.name === "trash-list" ||
-      command?.name === "trash-restore" ||
-      command?.name === "tree" ||
-      command?.name === "wc"
-    ) {
-      const localCommandName = command.name;
+    const resolvedLocalBin = command ? this.resolveLocalProjectCommand(command.name) : undefined;
+    if (command && resolvedLocalBin) {
+      const displayName = command.name;
       const project = existing?.project || this.config.project.defaultProject;
-      await sendEarlyUpdate(`Running ${localCommandName} in project \`${project}\`...`);
-      return this.runLocalCommand(localCommandName, project, command.args);
+      await sendEarlyUpdate(`Running ${resolvedLocalBin} in project \`${project}\`...`);
+      return this.runLocalCommand(resolvedLocalBin, project, command.args, displayName);
     }
 
     if (activeRun) {
@@ -1085,6 +1072,38 @@ export class App {
     }
   }
 
+  private configuredLocalCommandNames(): string[] {
+    return Object.keys(this.config.commands.map);
+  }
+
+  private builtinLocalProjectCommandNames(): string[] {
+    return [
+      "cat", "cp", "find", "head", "ln", "ls", "mkdir", "mv", "pwd",
+      "readlink", "rg", "rmdir", "sha256sum", "tail", "tar", "touch",
+      "trash", "trash-list", "trash-restore", "tree", "wc"
+    ];
+  }
+
+  private resolveLocalProjectCommand(commandName: string): string | undefined {
+    if (this.builtinLocalProjectCommandNames().includes(commandName)) return commandName;
+    return this.config.commands.map[commandName];
+  }
+
+  private isLocalProjectCommand(commandName: string): boolean {
+    return Boolean(this.resolveLocalProjectCommand(commandName));
+  }
+
+  private localProjectCommandNames(): string[] {
+    return Array.from(new Set([
+      ...this.builtinLocalProjectCommandNames(),
+      ...this.configuredLocalCommandNames()
+    ])).sort((a, b) => a.localeCompare(b));
+  }
+
+  private localProjectCommandHelpText(): string {
+    return this.localProjectCommandNames().map((name) => `\`/${name}\``).join(", ");
+  }
+
   private titleForCommand(commandName?: string, rawInput?: string): string {
     const detail = rawInput ? rawInput.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") : undefined;
     if (!commandName) {
@@ -1105,6 +1124,7 @@ export class App {
   }
 
   private commandBaseTitle(commandName: string): string {
+    if (this.isLocalProjectCommand(commandName)) return commandName;
     switch (commandName) {
       case "help": return "Help";
       case "status": return "Status";
@@ -1119,32 +1139,12 @@ export class App {
       case "log": return "Log";
       case "git": return "Git";
       case "feishu": return "Feishu";
-      case "pwd": return "pwd";
-      case "readlink": return "readlink";
-      case "ls": return "ls";
-      case "ln": return "ln";
-      case "cat": return "cat";
-      case "cp": return "cp";
-      case "head": return "head";
-      case "tail": return "tail";
-      case "tar": return "tar";
-      case "tree": return "tree";
-      case "find": return "find";
-      case "rg": return "rg";
-      case "sha256sum": return "sha256sum";
-      case "wc": return "wc";
-      case "mkdir": return "mkdir";
-      case "mv": return "mv";
-      case "rmdir": return "rmdir";
-      case "touch": return "touch";
-      case "trash": return "trash";
-      case "trash-list": return "trash-list";
-      case "trash-restore": return "trash-restore";
-      default: return "Copilot";
+      default: return commandName.charAt(0).toUpperCase() + commandName.slice(1);
     }
   }
 
   private commandTitleEmoji(commandName: string): string | undefined {
+    if (this.isLocalProjectCommand(commandName)) return "📂";
     switch (commandName) {
       case "help": return "❓";
       case "status": return "📊";
@@ -1159,27 +1159,6 @@ export class App {
       case "log": return "📜";
       case "git": return "🌿";
       case "feishu": return "🪶";
-      case "pwd":
-      case "ls":
-      case "ln":
-      case "cat":
-      case "cp":
-      case "head":
-      case "tail":
-      case "tar":
-      case "tree":
-      case "find":
-      case "rg":
-      case "sha256sum":
-      case "wc":
-      case "mkdir":
-      case "mv":
-      case "rmdir":
-      case "touch":
-      case "trash":
-      case "trash-list":
-      case "trash-restore":
-        return "📂";
       default: return undefined;
     }
   }
@@ -1231,7 +1210,7 @@ export class App {
       case "wc":
         return "wathet";
       default:
-        return "blue";
+        return this.isLocalProjectCommand(commandName) ? "wathet" : "blue";
     }
   }
 
@@ -1656,17 +1635,15 @@ export class App {
   }
 
   private async runLocalCommand(
-    command: "cat" | "cp" | "find" | "head" | "ln" | "ls" | "mkdir" | "mv" | "pwd" | "readlink" | "rg" | "rmdir" | "sha256sum" | "tail" | "tar" | "touch" | "trash" | "trash-list" | "trash-restore" | "tree" | "wc",
+    bin: string,
     project: string,
-    args: string[]
+    args: string[],
+    displayName = bin
   ): Promise<string | AppResponse> {
     // Feishu auto-converts filenames (e.g. README.md) to markdown links [README.md](http://readme.md/)
     // Strip these back to plain text before passing to the binary
     args = args.map(arg => arg.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"));
-    const bin = command === "trash-list" ? "trash-list"
-      : command === "trash-restore" ? "trash-restore"
-      : command;
-    const commandText = [command, ...args].join(" ");
+    const commandText = [displayName, ...args].join(" ");
     try {
       const { stdout, stderr } = await execFileAsync(bin, args, {
         cwd: project,
@@ -1675,10 +1652,10 @@ export class App {
       });
       const combined = [stdout, stderr].filter(Boolean).join(stderr && stdout ? "\n" : "");
       return [
-        `# ${command.toUpperCase()}`,
+        `# ${displayName.toUpperCase()}`,
         "",
         `- **Project**: \`${project}\``,
-        `- **Command**: \`${commandText || command}\``,
+        `- **Command**: \`${commandText || displayName}\``,
         "",
         "```text",
         this.truncateOutput(combined || "(no output)"),
@@ -1690,15 +1667,15 @@ export class App {
       return {
         severity: "warning",
         text: [
-          `# ${command.toUpperCase()}`,
+          `# ${displayName.toUpperCase()}`,
           "",
           `- **Project**: \`${project}\``,
-          `- **Command**: \`${commandText || command}\``,
+          `- **Command**: \`${commandText || displayName}\``,
           `- **Status**: ⚠️ \`failed\``,
           `- **Code**: \`${String(maybe.code ?? "(unknown)")}\``,
           "",
           "```text",
-          this.truncateOutput(output || maybe.message || `${command} command failed`),
+          this.truncateOutput(output || maybe.message || `${displayName} command failed`),
           "```"
         ].join("\n")
       };

@@ -51,6 +51,9 @@ export interface AppConfig {
     statusIncludeProject: boolean;
     inlineBlocks: "off" | "on";
   };
+  commands: {
+    map: Record<string, string>;
+  };
   project: {
     allowedRoots: string[];
     defaultProject: string;
@@ -107,6 +110,9 @@ interface JsonConfigShape {
   };
   paths?: {
     storePath?: unknown;
+  };
+  commands?: {
+    map?: unknown;
   };
   [key: string]: unknown;
 }
@@ -305,8 +311,29 @@ export function loadConfig(): AppConfig {
         .filter((p) => isUnderAnyRoot(p, projectAllowedRoots)),
       listMaxCount: readNumberSetting("PROJECT_LIST_MAX_COUNT", 100, jsonConfig, ["project", "listMaxCount"], { min: 1 })
     },
-    storePath: readTextSetting("STORE_PATH", ".data/bindings.json", jsonConfig, ["paths", "storePath"])
+    storePath: readTextSetting("STORE_PATH", ".data/bindings.json", jsonConfig, ["paths", "storePath"]),
+    commands: {
+      map: readStringMapSetting(jsonConfig, ["commands", "map"])
+    }
   };
+}
+
+function readStringMapSetting(
+  jsonConfig: JsonConfigShape | undefined,
+  jsonPath: string[]
+): Record<string, string> {
+  const jsonValue = readJsonValue(jsonConfig, jsonPath);
+  if (!jsonValue || typeof jsonValue !== "object" || Array.isArray(jsonValue)) {
+    return {};
+  }
+  const entries = Object.entries(jsonValue as Record<string, unknown>)
+    .map(([rawKey, rawValue]) => {
+      const key = rawKey.trim().replace(/^\/+/, "");
+      const value = typeof rawValue === "string" ? rawValue.trim() : "";
+      return [key, value] as const;
+    })
+    .filter(([key, value]) => key.length > 0 && value.length > 0);
+  return Object.fromEntries(entries);
 }
 
 function normalizeInlineBlocks(value: string): AppConfig["copilot"]["inlineBlocks"] {

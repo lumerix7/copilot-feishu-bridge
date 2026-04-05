@@ -37,12 +37,12 @@ export type CommandName =
   | "log";
 
 export interface ParsedCommand {
-  name: CommandName;
+  name: string;
   args: string[];
 }
 
 export interface ParsedCommandError {
-  name?: CommandName;
+  name?: string;
   parseError: string;
 }
 
@@ -107,53 +107,53 @@ function tokenizeCommandText(text: string): { tokens: string[]; parseError?: str
   return { tokens };
 }
 
-export function parseCommand(message: IncomingMessage): ParsedCommand | ParsedCommandError | undefined {
+export const BUILTIN_COMMAND_NAMES: readonly string[] = [
+  "help",
+  "status",
+  "new",
+  "session",
+  "resume",
+  "stop",
+  "compact",
+  "model",
+  "system",
+  "project",
+  "git",
+  "cat",
+  "cp",
+  "find",
+  "head",
+  "ls",
+  "ln",
+  "mkdir",
+  "mv",
+  "pwd",
+  "readlink",
+  "rg",
+  "rmdir",
+  "sha256sum",
+  "tail",
+  "tar",
+  "touch",
+  "trash",
+  "trash-list",
+  "trash-restore",
+  "tree",
+  "wc",
+  "feishu",
+  "log"
+];
+
+export function parseCommand(message: IncomingMessage, extraNames: readonly string[] = []): ParsedCommand | ParsedCommandError | undefined {
   const text = message.text.trim();
   if (!text.startsWith("/")) return undefined;
   const { tokens, parseError } = tokenizeCommandText(text.slice(1));
   const [head, ...args] = tokens;
-  if (
-    [
-      "help",
-      "status",
-      "new",
-      "session",
-      "resume",
-      "stop",
-      "compact",
-      "model",
-      "system",
-      "project",
-      "git",
-      "cat",
-      "cp",
-      "find",
-      "head",
-      "ls",
-      "ln",
-      "mkdir",
-      "mv",
-      "pwd",
-      "readlink",
-      "rg",
-      "rmdir",
-      "sha256sum",
-      "tail",
-      "tar",
-      "touch",
-      "trash",
-      "trash-list",
-      "trash-restore",
-      "tree",
-      "wc",
-      "feishu",
-      "log"
-    ].includes(head)
-  ) {
+  if ([...BUILTIN_COMMAND_NAMES, ...extraNames].includes(head)) {
     if (parseError) {
-      return { name: head as CommandName, parseError };
+      return { name: head, parseError };
     }
-    return { name: head as CommandName, args };
+    return { name: head, args };
   }
   return undefined;
 }
