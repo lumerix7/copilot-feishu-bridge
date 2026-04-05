@@ -1029,7 +1029,7 @@ export class App {
       const displayName = command.name;
       const project = existing?.project || this.config.project.defaultProject;
       const commandText = [displayName, ...command.args].join(" ");
-      await sendEarlyUpdate(this.commandMetaCard(displayName.toUpperCase(), project, commandText));
+      await sendEarlyUpdate(this.commandMetaCard(displayName, project, commandText));
       return this.runLocalCommand(resolvedLocalBin, project, command.args, displayName);
     }
 
@@ -1097,8 +1097,12 @@ export class App {
       if (binding?.copilotSessionId) {
         await this.copilot.probeSessionModelInfo(binding.copilotSessionId, binding.project).catch(() => {});
       }
-      const feishuDiagnostics = this.feishu?.diagnostics();
+      const [copilotInfo, feishuDiagnostics] = await Promise.all([
+        this.copilot.getCopilotInfo().catch(() => undefined),
+        Promise.resolve(this.feishu?.diagnostics()),
+      ]);
       const text = [
+        `- **Copilot**: \`${copilotInfo?.status.version ?? "(unknown)"}\``,
         `- **Backend**: \`acp\``,
         `- **Default project**: \`${this.config.project.defaultProject}\``,
         ...(binding?.project ? [`- **Current project**: \`${binding.project}\``] : []),
@@ -1318,9 +1322,8 @@ export class App {
     const quotaStr = quota !== undefined ? `${quota.toFixed(1)}%` : undefined;
     const parts: string[] = [
       ...(model ? [effort ? `${model} ${effort}` : model] : []),
-      ...(project ? [project] : []),
+      ...(project ? [`\`${project}\``] : []),
       ...(sessionId ? [sessionId] : []),
-      "full-access",
       ...(quotaStr ? [quotaStr] : []),
     ];
     return `${this.buildIsoFooter()}  |  ${parts.join(" · ")}`;
@@ -1720,8 +1723,8 @@ export class App {
     return `${fence}${language}\n${value}\n${fence}`;
   }
 
-  private commandMetaCard(title: string, project: string, commandText: string): string {
-    return [`# ${title}`, "", `- **Project**: \`${project}\``, `- **Command**: \`${commandText}\``].join("\n");
+  private commandMetaCard(displayName: string, project: string, _commandText: string): string {
+    return `Running \`${displayName}\` in project \`${project}\`...`;
   }
 
   private async readInstalledPackageVersion(packageName: string): Promise<string | undefined> {

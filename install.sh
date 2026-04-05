@@ -15,6 +15,29 @@ JSON_PATH="${CONFIG_DIR}/config.json"
 USER_HOME="${HOME}"
 PATH_VALUE="${PATH}"
 
+YES=0
+for arg in "$@"; do
+  case "${arg}" in
+    -h|--help)
+      echo "Usage: $(basename "$0") [-h|--help] [-y|--yes]"
+      echo ""
+      echo "Options:"
+      echo "  -h, --help   show this help and exit"
+      echo "  -y, --yes    skip confirmation prompt"
+      echo ""
+      echo "Cleans, builds, installs the package globally, installs/updates the"
+      echo "user systemd service, and restarts it."
+      exit 0
+      ;;
+    -y|--yes) YES=1 ;;
+    *)
+      echo "Unknown option: ${arg}" >&2
+      echo "Run '$(basename "$0") --help' for usage." >&2
+      exit 1
+      ;;
+  esac
+done
+
 echo "This will clean, install packages, build, install the package globally, install/update the user service, kill old bridge processes, and restart the service."
 echo "repo: ${ROOT_DIR}"
 echo "unit: ${UNIT_PATH}"
@@ -24,10 +47,12 @@ echo "note: config.json is the primary bridge config; bridge.env is only for sec
 if [[ -f "${JSON_PATH}" ]]; then
   echo "note: existing config.json will be preserved."
 fi
-read -r -p "Continue? [y/N] " CONFIRM
-if [[ ! "${CONFIRM}" =~ ^[Yy]$ ]]; then
-  echo "aborted"
-  exit 1
+if [[ "${YES}" -eq 0 ]]; then
+  read -r -p "Continue? [y/N] " CONFIRM
+  if [[ ! "${CONFIRM}" =~ ^[Yy]$ ]]; then
+    echo "aborted"
+    exit 1
+  fi
 fi
 
 cd "${ROOT_DIR}"
