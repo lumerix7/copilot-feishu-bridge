@@ -1281,8 +1281,8 @@ function wrapRawMarkdown(text: string): string {
     0,
     ...Array.from(text.matchAll(/`+/g), (match) => match[0].length)
   );
-  const fence = "`".repeat(longestBacktickRun > 0 ? longestBacktickRun + 1 : 3);
-  return `${fence}\n${text}\n${fence}`;
+  const fence = "`".repeat(Math.max(3, longestBacktickRun + 1));
+  return `${fence}markdown\n${text}\n${fence}`;
 }
 
 function splitMarkdownBlocks(text: string): string[] {
