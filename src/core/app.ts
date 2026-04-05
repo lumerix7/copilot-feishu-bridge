@@ -675,6 +675,9 @@ export class App {
       if (sessionArgs.peek() === "list") {
         sessionArgs.shift();
         const projectScopeArg = sessionArgs.takeOption("--project");
+        if (projectScopeArg === "") {
+          return this.renderCommandError("Session", "missing value for `--project <path>`", "`/session list [-n <count>] [--all] [--project <path>]`");
+        }
         const allProjects = sessionArgs.takeFlag("--all");
         const countArg = sessionArgs.takeOption("-n");
         const scopedProject = projectScopeArg
@@ -691,6 +694,20 @@ export class App {
           limit = allProjects
             ? this.config.copilot.sessionListMaxCount
             : this.config.copilot.sessionListDefaultCount;
+        }
+        const leftoverListArgs = sessionArgs.remaining();
+        if (leftoverListArgs.length > 0) {
+          return leftoverListArgs[0].startsWith("/")
+            ? this.renderCommandError(
+                "Session",
+                "use `--project <path>` to filter sessions by project path",
+                "`/session list --project <path> [-n <count>] [--all]`"
+              )
+            : this.renderCommandError(
+                "Session",
+                `unsupported session list argument \`${leftoverListArgs[0]}\``,
+                "`/session list [-n <count>] [--all] [--project <path>]`"
+              );
         }
         const sessions = await this.listSessionsForDisplay(limit, allProjects ? undefined : scopedProject);
         if (sessions.length === 0) {
