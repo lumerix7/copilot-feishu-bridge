@@ -163,8 +163,13 @@ export class AcpClient {
     model: string,
     reasoningEffort?: "low" | "medium" | "high" | "xhigh",
   ): Promise<void> {
-    const session = this.sessions.get(sessionId);
-    if (!session) throw new Error(`Session not active: ${sessionId}`);
+    let session = this.sessions.get(sessionId);
+    if (!session) {
+      const client = this.getOrCreateClient();
+      session = await client.resumeSession(sessionId, { onPermissionRequest: approveAll });
+      this.sessions.set(sessionId, session);
+      this.attachModelTracking(session);
+    }
     await session.setModel(model, reasoningEffort ? { reasoningEffort } : undefined);
   }
 

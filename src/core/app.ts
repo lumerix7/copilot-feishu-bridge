@@ -846,7 +846,7 @@ export class App {
       }
 
       const noHidden = modelArgs.takeFlag("--no-hidden");
-      if (modelArgs.peek() === "--list" || modelArgs.peek() === "list") {
+      if (modelArgs.peek() === "--list") {
         modelArgs.shift();
         await sendEarlyUpdate("Fetching Copilot model list...");
         const models = await this.copilot.listModels().catch(() => []);
