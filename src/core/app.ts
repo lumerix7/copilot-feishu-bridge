@@ -1019,7 +1019,8 @@ export class App {
 
     if (command?.name === "git") {
       const project = existing?.project || this.config.project.defaultProject;
-      await sendEarlyUpdate(`Running Git in project \`${project}\`...`);
+      const commandText = ["git", ...command.args].join(" ");
+      await sendEarlyUpdate(this.commandMetaCard("Git", project, commandText));
       return this.runGitCommand(project, command.args);
     }
 
@@ -1027,7 +1028,8 @@ export class App {
     if (command && resolvedLocalBin) {
       const displayName = command.name;
       const project = existing?.project || this.config.project.defaultProject;
-      await sendEarlyUpdate(`Running ${resolvedLocalBin} in project \`${project}\`...`);
+      const commandText = [displayName, ...command.args].join(" ");
+      await sendEarlyUpdate(this.commandMetaCard(displayName.toUpperCase(), project, commandText));
       return this.runLocalCommand(resolvedLocalBin, project, command.args, displayName);
     }
 
@@ -1496,7 +1498,7 @@ export class App {
         for (let i = messages.length - 1; i >= 0; i--) {
           const ev = messages[i];
           if (ev.type === "user.message" && ev.data.content?.trim()) {
-            entry.preview = ev.data.content.trim();
+            entry.preview = this.previewText(ev.data.content.trim(), 80);
             break;
           }
         }
@@ -1648,7 +1650,6 @@ export class App {
   }
 
   private async runGitCommand(project: string, args: string[]): Promise<string | AppResponse> {
-    const commandText = ["git", ...args].join(" ");
     try {
       const { stdout, stderr } = await execFileAsync("git", args, {
         cwd: project,
@@ -1656,32 +1657,17 @@ export class App {
         maxBuffer: 8 * 1024 * 1024
       });
       const combined = [stdout, stderr].filter(Boolean).join(stderr && stdout ? "\n" : "");
-      return [
-        "# Git",
-        "",
-        `- **Project**: \`${project}\``,
-        `- **Command**: \`${commandText}\``,
-        "",
-        "```text",
-        this.truncateOutput(combined || "(no output)"),
-        "```"
-      ].join("\n");
+      return this.renderFencedBlock("text", this.truncateOutput(combined || "(no output)"));
     } catch (error) {
       const maybe = error as Error & { code?: number | string; stdout?: string; stderr?: string; signal?: NodeJS.Signals };
       const output = [maybe.stdout, maybe.stderr].filter(Boolean).join(maybe.stdout && maybe.stderr ? "\n" : "");
       return {
         severity: "warning",
         text: [
-          "# Git",
-          "",
-          `- **Project**: \`${project}\``,
-          `- **Command**: \`${commandText}\``,
           `- **Status**: ⚠️ \`failed\``,
           `- **Code**: \`${String(maybe.code ?? "(unknown)")}\``,
           "",
-          "```text",
-          this.truncateOutput(output || maybe.message || "git command failed"),
-          "```"
+          this.renderFencedBlock("text", this.truncateOutput(output || maybe.message || "git command failed"))
         ].join("\n")
       };
     }
@@ -1696,7 +1682,6 @@ export class App {
     // Feishu auto-converts filenames (e.g. README.md) to markdown links [README.md](http://readme.md/)
     // Strip these back to plain text before passing to the binary
     args = args.map(arg => arg.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"));
-    const commandText = [displayName, ...args].join(" ");
     try {
       const { stdout, stderr } = await execFileAsync(bin, args, {
         cwd: project,
@@ -1704,32 +1689,17 @@ export class App {
         maxBuffer: 8 * 1024 * 1024
       });
       const combined = [stdout, stderr].filter(Boolean).join(stderr && stdout ? "\n" : "");
-      return [
-        `# ${displayName.toUpperCase()}`,
-        "",
-        `- **Project**: \`${project}\``,
-        `- **Command**: \`${commandText || displayName}\``,
-        "",
-        "```text",
-        this.truncateOutput(combined || "(no output)"),
-        "```"
-      ].join("\n");
+      return this.renderFencedBlock("text", this.truncateOutput(combined || "(no output)"));
     } catch (error) {
       const maybe = error as Error & { code?: number | string; stdout?: string; stderr?: string; signal?: NodeJS.Signals };
       const output = [maybe.stdout, maybe.stderr].filter(Boolean).join(maybe.stdout && maybe.stderr ? "\n" : "");
       return {
         severity: "warning",
         text: [
-          `# ${displayName.toUpperCase()}`,
-          "",
-          `- **Project**: \`${project}\``,
-          `- **Command**: \`${commandText || displayName}\``,
           `- **Status**: ⚠️ \`failed\``,
           `- **Code**: \`${String(maybe.code ?? "(unknown)")}\``,
           "",
-          "```text",
-          this.truncateOutput(output || maybe.message || `${displayName} command failed`),
-          "```"
+          this.renderFencedBlock("text", this.truncateOutput(output || maybe.message || `${displayName} command failed`))
         ].join("\n")
       };
     }
@@ -1739,6 +1709,19 @@ export class App {
     const limit = this.config.copilot.outputSoftLimit;
     if (value.length <= limit) return value;
     return `${value.slice(0, limit)}\n\n[output truncated]`;
+  }
+
+  private renderFencedBlock(language: string, value: string): string {
+    const longestBacktickRun = Math.max(
+      0,
+      ...Array.from(value.matchAll(/`+/g), (match) => match[0].length)
+    );
+    const fence = "`".repeat(longestBacktickRun > 0 ? longestBacktickRun + 1 : 3);
+    return `${fence}${language}\n${value}\n${fence}`;
+  }
+
+  private commandMetaCard(title: string, project: string, commandText: string): string {
+    return [`# ${title}`, "", `- **Project**: \`${project}\``, `- **Command**: \`${commandText}\``].join("\n");
   }
 
   private async readInstalledPackageVersion(packageName: string): Promise<string | undefined> {
