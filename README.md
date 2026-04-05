@@ -10,6 +10,8 @@ A **Feishu-native bridge for GitHub Copilot** conversations. Chat with the local
 - **Session persistence**: conversation history is preserved across restarts
 - **Streaming**: Copilot responses stream to Feishu cards with live token updates
 
+Large fenced output can still render a bit differently across Feishu desktop and mobile clients. Keep pagination line-safe and see [`docs/feishu-rendering-caveats.md`](./docs/feishu-rendering-caveats.md) before changing gateway chunking.
+
 ## Setup
 
 ### 1. Prerequisites
