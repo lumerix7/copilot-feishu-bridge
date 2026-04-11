@@ -14,9 +14,11 @@ Large fenced output can still render a bit differently across Feishu desktop and
 
 ## Setup
 
+For the full bridge install and Feishu robot setup flow, see [`docs/bridge-install-setup-guide.md`](./docs/bridge-install-setup-guide.md).
+
 ### 1. Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - `copilot` CLI installed and authenticated (run `copilot auth login` first)
 - A Feishu app with websocket event subscription enabled
 
