@@ -85,7 +85,7 @@ All commands are slash commands in a Feishu DM to the bot.
 - `/help [--raw-markdown]` show commands
 - `/status [check-update] [-h|--help]` show current session and run state; `check-update` checks npm versions
 - `/new [-C <dir>] [-h|--help]` create and bind a fresh Copilot session
-- `/session [list [-n <count>] [--all] [--project <path>]] [--raw-markdown] [-h|--help]` show the current session or browse recent sessions
+- `/session [<session-id>|list [options]] [-h|--help]` show the current session, inspect a specific session, or browse recent sessions
 - `/resume [<session-id>|--last|-n <index>|--list] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session
 - `/compact` compact the current bound Copilot session
 - `/stop` stop the current active run

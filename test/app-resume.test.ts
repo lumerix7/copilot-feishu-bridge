@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -104,6 +105,62 @@ test("resume help works regardless of -h position", async () => {
   }
 });
 
+test("session help works regardless of -h position", async () => {
+  const app = new App(makeConfig());
+
+  for (const text of [
+    "/session -h",
+    "/session session-1 -h",
+    "/session -h session-1",
+    "/session list --project /tmp/project-a -h"
+  ]) {
+    const result = await app.handleIncoming({
+      chatId: "chat_test",
+      messageId: "msg_test",
+      chatType: "p2p",
+      text
+    });
+
+    assert.equal(typeof result, "string");
+    assert.match(String(result), /^# Session\n\nInspect the current bound session, inspect one specific Copilot session, or browse recent sessions\./);
+  }
+});
+
+test("session with an explicit session id renders that session without bound flags", async () => {
+  const app = new App(makeConfig());
+  const store = (app as unknown as { store: { put: (value: unknown) => Promise<void> } }).store;
+  await fs.mkdir("/tmp/project-b", { recursive: true });
+  await store.put({
+    conversationKey: "p2p:chat_test",
+    copilotSessionId: "session-1",
+    project: "/tmp/project-a",
+    createdAt: "2026-04-09T00:00:00.000Z",
+    updatedAt: "2026-04-09T00:00:00.000Z"
+  });
+
+  const sessionMeta = {
+    sessionId: "session-2",
+    summary: "preview session-2",
+    startTime: new Date("2026-04-09T12:00:00.000Z"),
+    context: { cwd: "/tmp/project-b" }
+  } as SessionMetadata;
+  const backend = makeBackend({ sessions: [sessionMeta], sessionExists: true });
+  (backend as { getSessionModelInfo: (sessionId: string) => { model?: string } | undefined }).getSessionModelInfo =
+    (sessionId: string) => sessionId === "session-2" ? { model: "gpt-5" } : undefined;
+  (app as unknown as { copilot: unknown }).copilot = backend;
+
+  const result = await app.handleIncoming({
+    chatId: "chat_test",
+    messageId: "msg_test",
+    chatType: "p2p",
+    text: "/session session-2"
+  });
+
+  assert.equal(typeof result, "string");
+  assert.match(String(result), /^# Session\n\n- \*\*Session\*\*: `session-2`\n- \*\*Project\*\*: `\/tmp\/project-b`/);
+  assert.match(String(result), /- \*\*Flags\*\*: -$/m);
+});
+
 test("resume without a selector warns and points to explicit latest aliases", async () => {
   const app = new App(makeConfig());
 
@@ -142,7 +199,7 @@ test("resume last aliases render source as last", async () => {
 
     assert.equal(typeof result, "string");
     assert.match(String(result), /^# Resume Session\n\n- \*\*Source\*\*: `last`\n\n- \*\*Session\*\*: `session-1`/);
-    assert.match(String(result), /- \*\*Last message\*\*:\n\n```text\nsession summary\n```$/);
+    assert.match(String(result), /- \*\*Last message\*\*:\n\n```text\nsession summary\n```\n- \*\*Flags\*\*: `current`, bound$/);
   }
 });
 

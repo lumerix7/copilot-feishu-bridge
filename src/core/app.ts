@@ -357,7 +357,7 @@ export class App {
         "- `/help [--raw-markdown]` show commands",
         "- `/status [check-update] [-h|--help]` show current session and run state; `check-update` checks npm versions",
         "- `/new [-C <dir>] [-h|--help]` create and bind a fresh Copilot session",
-        "- `/session [list [-n <count>] [--all] [--project <path>]] [--raw-markdown] [-h|--help]` show the current session or browse recent sessions",
+        "- `/session [<session-id>|list [options]] [-h|--help]` show the current session, inspect a specific session, or browse recent sessions",
         "- `/resume [<session-id>|-|--last|-n <index>|list] [-h|--help]` resume a session",
         "- `/compact` compact the current bound Copilot session",
         "- `/stop` stop the current active run",
@@ -761,6 +761,7 @@ export class App {
         sessionId: targetSessionId,
         project: binding.project,
         sessionMeta,
+        flags: ["current", "bound"],
         leadingLines: [
           `- **Source**: \`${resumeSource}\``,
           ...(resumeIndex ? [`- **Index**: \`${resumeIndex}\``] : [])
@@ -779,7 +780,7 @@ export class App {
       const sessionArgs = new ArgCursor(command.args);
       const rawMarkdownOnly = sessionArgs.takeFlag("--raw-markdown");
       const sessionBodyFormat: OutgoingBodyFormat | undefined = rawMarkdownOnly ? "raw-markdown" : undefined;
-      if (sessionArgs.peek() === "-h" || sessionArgs.peek() === "--help") {
+      if (sessionArgs.takeFlag("-h", "--help")) {
         return this.withBodyFormat(this.sessionsHelpText(), sessionBodyFormat);
       }
       const currentProject = existing?.project || this.config.project.defaultProject;
@@ -819,12 +820,12 @@ export class App {
             ? this.renderCommandError(
                 "Session",
                 "use `--project <path>` to filter sessions by project path",
-                "`/session list --project <path> [-n <count>] [--all] [--raw-markdown]`"
+                "`/session list --project <path> [-n <count>] [--all]`"
               )
             : this.renderCommandError(
                 "Session",
                 `unsupported session list argument \`${leftoverListArgs[0]}\``,
-                "`/session list [-n <count>] [--all] [--project <path>] [--raw-markdown]`"
+                "`/session list [-n <count>] [--all] [--project <path>]`"
               ), sessionBodyFormat);
         }
         const sessions = await this.listSessionsForDisplay(limit, allProjects ? undefined : scopedProject);
@@ -834,12 +835,53 @@ export class App {
         return this.withBodyFormat(this.renderSessionList("Sessions", sessions, existing?.copilotSessionId), sessionBodyFormat);
       }
 
-      if (!sessionArgs.isEmpty()) {
+      if ((sessionArgs.peek() || "").startsWith("-")) {
         return this.withBodyFormat(this.renderCommandError(
           "Session",
-          `unsupported session subcommand \`${sessionArgs.peek()}\``,
-          "`/session [list [-n <count>] [--all] [--project <path>]] [--raw-markdown] [-h|--help]`"
+          `unsupported bridge option \`${sessionArgs.peek()}\``,
+          "`/session [<session-id>|list [options]|-h]`"
         ), sessionBodyFormat);
+      }
+
+      if (!sessionArgs.isEmpty()) {
+        const targetSessionId = sessionArgs.shift();
+        if (!targetSessionId) {
+          return this.withBodyFormat(this.renderCommandError(
+            "Session",
+            "missing session id",
+            "`/session [<session-id>|list [options]|-h]`"
+          ), sessionBodyFormat);
+        }
+        if (!sessionArgs.isEmpty()) {
+          return this.withBodyFormat(this.renderCommandError(
+            "Session",
+            `unsupported session argument \`${sessionArgs.peek()}\``,
+            "`/session <session-id> [--raw-markdown]`"
+          ), sessionBodyFormat);
+        }
+        const sessionMeta = (await this.copilot.listSessions()).find((s) => s.sessionId === targetSessionId);
+        if (!sessionMeta) {
+          const sessionExists = await this.copilot.getSession(targetSessionId).catch(() => undefined);
+          if (!sessionExists) {
+            return this.withBodyFormat(this.renderCommandError(
+              "Session",
+              `Session not found: ${targetSessionId}`
+            ), sessionBodyFormat);
+          }
+        }
+        const resolvedProject =
+          sessionMeta?.context?.cwd
+            ? await this.resolveProject(sessionMeta.context.cwd, currentProject)
+            : currentProject;
+        const modelInfo = this.copilot.getSessionModelInfo(targetSessionId);
+        return this.withBodyFormat(this.renderSessionDetailText({
+          title: "Session",
+          sessionId: targetSessionId,
+          project: resolvedProject,
+          sessionMeta,
+          modelInfo,
+          flags: existing?.copilotSessionId === targetSessionId ? ["current", "bound"] : []
+        }), sessionBodyFormat);
       }
 
       if (!existing?.copilotSessionId) {
@@ -853,7 +895,8 @@ export class App {
         sessionId: existing.copilotSessionId,
         project,
         sessionMeta,
-        modelInfo: sessionInfo
+        modelInfo: sessionInfo,
+        flags: ["current", "bound"]
       }), sessionBodyFormat);
     }
 
@@ -1574,8 +1617,9 @@ export class App {
     sessionMeta?: SessionMetadata;
     modelInfo?: { model?: string; reasoningEffort?: string };
     leadingLines?: string[];
+    flags?: string[];
   }): string {
-    const { title, sessionId, project, sessionMeta, modelInfo, leadingLines = [] } = options;
+    const { title, sessionId, project, sessionMeta, modelInfo, leadingLines = [], flags = [] } = options;
     const lastMessage = sessionMeta?.summary || "(no preview)";
     return [
       `# ${title}`,
@@ -1591,7 +1635,8 @@ export class App {
       `- **Cwd**: \`${sessionMeta?.context?.cwd || "(unknown)"}\``,
       "- **Last message**:",
       "",
-      this.renderFencedBlock("text", lastMessage)
+      this.renderFencedBlock("text", lastMessage),
+      `- **Flags**: ${flags.length > 0 ? flags.map((flag) => this.formatListFlag(flag)).join(", ") : "-"}`
     ].join("\n");
   }
 
@@ -2164,21 +2209,37 @@ export class App {
     return [
       "# Session",
       "",
-      "Inspect the current bound session or browse recent Copilot sessions.",
+      "Inspect the current bound session, inspect one specific Copilot session, or browse recent sessions.",
       "",
       "## Usage",
       "",
-      "- `/session [list [-n <count>] [--all] [--project <path>]] [--raw-markdown]`",
-      "- `/session -h|--help [--raw-markdown]`",
+      "### `/session [<session-id>]` - Show session details.",
       "",
-      "## Options",
+      "- `/session` Show the current bound session for this conversation.",
+      "- `<session-id>` Show one specific session id without rebinding.",
       "",
-      "**List**",
-      "- `list` — browse recent sessions",
-      "- `-n <count>` — limit the list size; accepts values from 1 to 1000",
-      "- `--all` — include sessions from all projects",
-      "- `--project <path>` — filter to one specific project path",
-      "- `--raw-markdown` — return fenced source markdown instead of rendered markdown"
+      "#### Options",
+      "",
+      "### `/session list [options]` - List recent sessions.",
+      "",
+      "- `/session list` Browse recent sessions instead of rendering one session detail view.",
+      "",
+      "#### Options",
+      "",
+      "- `-n <count>` Limit the list size; accepts values from `1` to `1000`.",
+      "- `--all` Expand browsing beyond the current project.",
+      "- `--project <path>` Scope the list to one specific project path.",
+      "",
+      "### General",
+      "",
+      "- `--raw-markdown` Return fenced source markdown instead of rendered markdown.",
+      "- `-h, --help` Show session help.",
+      "",
+      "## Examples",
+      "",
+      "- `/session` - show the current bound session for this conversation",
+      "- `/session <session-id>` - inspect one specific session without rebinding",
+      "- `/session list` - browse recent sessions for the current project"
     ].join("\n");
   }
 
