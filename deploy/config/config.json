@@ -11,6 +11,7 @@
     "wsReconnectWarnThreshold": 3,
     "reconnectReadyDebounceMs": 60000,
     "titleMaxLength": 120,
+    "footerTitleMaxLength": 50,
     "sendRetry": {
       "maxAttempts": 5,
       "baseDelayMs": 1000,

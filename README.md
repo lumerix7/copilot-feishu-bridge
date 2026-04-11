@@ -152,6 +152,7 @@ All variables can also be set via the JSON config file (takes precedence over de
 | `FEISHU_WS_AUTO_RECONNECT` | `true` | Auto-reconnect websocket on disconnect |
 | `FEISHU_WS_LOGGER_LEVEL` | `debug` | Feishu SDK logger level |
 | `FEISHU_TITLE_MAX_LENGTH` | `120` | Max message title length |
+| `FEISHU_FOOTER_TITLE_MAX_LENGTH` | `50` | Max session title length shown in the footer before middle truncation |
 | `FEISHU_SEND_RETRY_MAX_ATTEMPTS` | `5` | Max outbound send retries |
 
 ### Other

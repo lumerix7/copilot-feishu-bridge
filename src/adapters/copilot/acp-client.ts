@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   CopilotClient,
   CopilotSession,
@@ -13,6 +16,26 @@ import {
 } from '@github/copilot-sdk';
 
 const SDK_CLI_PATH = process.env.COPILOT_CLI_PATH || '/opt/node/lib/node_modules/@github/copilot/npm-loader.js';
+
+function copilotSessionStateDir(): string {
+  return process.env.COPILOT_SESSION_STATE_DIR || path.join(os.homedir(), ".copilot", "session-state");
+}
+
+function parseWorkspaceTitle(raw: string): string | undefined {
+  const lines = raw.split(/\r?\n/);
+  for (const key of ["name", "summary"]) {
+    const prefix = `${key}:`;
+    const line = lines.find((item) => item.startsWith(prefix));
+    if (!line) continue;
+    const value = line.slice(prefix.length).trim();
+    if (!value) continue;
+    const quoted =
+      (value.startsWith('"') && value.endsWith('"'))
+      || (value.startsWith("'") && value.endsWith("'"));
+    return quoted ? value.slice(1, -1) : value;
+  }
+  return undefined;
+}
 
 export interface SessionModelInfo {
   model: string;
@@ -304,6 +327,18 @@ export class AcpClient {
     return this.sessionTitles.get(sessionId);
   }
 
+  private async readSessionTitleFromWorkspace(sessionId: string): Promise<string | undefined> {
+    const workspacePath = path.join(copilotSessionStateDir(), sessionId, "workspace.yaml");
+    const raw = await fs.readFile(workspacePath, "utf8").catch(() => undefined);
+    if (!raw) return undefined;
+    const title = parseWorkspaceTitle(raw);
+    if (title?.trim()) {
+      this.sessionTitles.set(sessionId, title.trim());
+      return title.trim();
+    }
+    return undefined;
+  }
+
   async readSessionTitle(sessionId: string): Promise<string | undefined> {
     if (this.sessionTitles.has(sessionId)) return this.sessionTitles.get(sessionId);
     try {
@@ -311,7 +346,7 @@ export class AcpClient {
     } catch {
       // ignore
     }
-    return this.sessionTitles.get(sessionId);
+    return this.sessionTitles.get(sessionId) || this.readSessionTitleFromWorkspace(sessionId);
   }
 
   async renameSession(sessionId: string, title: string, workingDirectory?: string): Promise<string | undefined> {

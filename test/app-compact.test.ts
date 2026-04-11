@@ -25,7 +25,8 @@ function makeConfig() {
       sendRetryBaseDelayMs: 100,
       sendRetryMultiplier: 2,
       sendRetryMaxDelayMs: 1000,
-      titleMaxLength: 80
+      titleMaxLength: 80,
+      footerTitleMaxLength: 50
     },
     copilot: {
       copilotBin: "copilot",

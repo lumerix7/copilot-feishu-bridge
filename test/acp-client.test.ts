@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { AcpClient } from "../src/adapters/copilot/acp-client.js";
 
@@ -103,4 +106,40 @@ test("compactSession falls back to legacy session.compaction.compact when histor
   const result = await client.compactSession("session-1", "/tmp/project-a");
 
   assert.deepEqual(result, { success: true, tokensRemoved: 7, messagesRemoved: 2 });
+});
+
+test("readSessionTitle falls back to workspace summary or name", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "copilot-session-state-"));
+  const sessionId = "session-1";
+  const workspaceDir = path.join(tempDir, sessionId);
+  await fs.mkdir(workspaceDir, { recursive: true });
+  await fs.writeFile(
+    path.join(workspaceDir, "workspace.yaml"),
+    [
+      `id: ${sessionId}`,
+      "cwd: /tmp/project-a",
+      "summary: Review changes",
+      "name: Review changes",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  const previousDir = process.env.COPILOT_SESSION_STATE_DIR;
+  process.env.COPILOT_SESSION_STATE_DIR = tempDir;
+
+  try {
+    const client = new AcpClient() as any;
+    client.getSessionMessages = async () => [];
+
+    const title = await client.readSessionTitle(sessionId);
+
+    assert.equal(title, "Review changes");
+    assert.equal(client.getSessionTitle(sessionId), "Review changes");
+  } finally {
+    if (previousDir === undefined) {
+      delete process.env.COPILOT_SESSION_STATE_DIR;
+    } else {
+      process.env.COPILOT_SESSION_STATE_DIR = previousDir;
+    }
+  }
 });

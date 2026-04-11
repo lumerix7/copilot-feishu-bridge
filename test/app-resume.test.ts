@@ -26,7 +26,8 @@ function makeConfig() {
       sendRetryBaseDelayMs: 100,
       sendRetryMultiplier: 2,
       sendRetryMaxDelayMs: 1000,
-      titleMaxLength: 80
+      titleMaxLength: 80,
+      footerTitleMaxLength: 50
     },
     copilot: {
       copilotBin: "copilot",
@@ -60,10 +61,12 @@ function makeBackend(options?: {
   sessions?: SessionMetadata[];
   messages?: SessionEvent[];
   sessionExists?: boolean;
+  titleBySessionId?: Record<string, string | undefined>;
 }) {
   const sessions = options?.sessions ?? [];
   const messages = options?.messages ?? [];
   const sessionExists = options?.sessionExists ?? true;
+  const titleBySessionId = options?.titleBySessionId ?? {};
   return {
     mode: "acp" as const,
     createSession: async () => "unused",
@@ -73,7 +76,7 @@ function makeBackend(options?: {
     stop: async () => false,
     compact: async () => ({ success: true, tokensRemoved: 0, messagesRemoved: 0 }),
     getSession: async (sessionId: string) => (sessionExists ? sessionId : undefined),
-    getSessionTitle: async () => undefined,
+    getSessionTitle: async (sessionId: string) => titleBySessionId[sessionId],
     listSessions: async () => sessions,
     listModels: async () => [],
     getCopilotInfo: async () => {
@@ -367,7 +370,7 @@ test("recent replay messages render as Copilot and User fenced text blocks", () 
   );
 
   assert.deepEqual(assistantRendered, {
-    text: "[Copilot] 2026-04-09T20:27:10.194+08:00\n\nbefore ``` inside",
+    text: "[Copilot] 2026-04-09T20:27:10+08:00\n\nbefore ``` inside",
     bodyFormat: "raw-text"
   });
   assert.deepEqual(userRendered, {
@@ -424,13 +427,119 @@ test("resume emits recent replay messages as separate status updates", async () 
   assert.equal(statusUpdates.length, 3);
   assert.equal(statusUpdates[0], "Resolving session `session-1`...");
   assert.deepEqual(statusUpdates[1], {
-    text: "[Copilot] 2026-04-09T20:27:10.194+08:00\n\nhello from copilot",
+    text: "[Copilot] 2026-04-09T20:27:10+08:00\n\nhello from copilot",
     bodyFormat: "raw-text"
   });
   assert.deepEqual(statusUpdates[2], {
-    text: "[User] 2026-04-09T20:27:20.194+08:00\n\nfollow-up",
+    text: "[User] 2026-04-09T20:27:20+08:00\n\nfollow-up",
     bodyFormat: "raw-text"
   });
+});
+
+test("resume stores fetched title for footer rendering", async () => {
+  const app = new App(makeConfig());
+  const store = (app as unknown as { store: { put: (value: unknown) => Promise<void>; get: (key: string) => Promise<any> } }).store;
+  await fs.mkdir("/tmp/project-a", { recursive: true });
+  const sessionMeta = {
+    sessionId: "session-1",
+    summary: "summary preview",
+    startTime: new Date("2026-04-09T12:00:00.000Z"),
+    context: { cwd: "/tmp/project-a" }
+  } as SessionMetadata;
+  (app as unknown as { copilot: unknown }).copilot = makeBackend({
+    sessions: [sessionMeta],
+    titleBySessionId: { "session-1": "Review changes" }
+  });
+
+  const result = await app.handleIncoming({
+    chatId: "chat_test",
+    messageId: "msg_test",
+    chatType: "p2p",
+    text: "/resume session-1"
+  });
+
+  assert.equal(typeof result, "string");
+  const binding = await store.get("p2p:chat_test");
+  assert.equal(binding?.sessionTitle, "Review changes");
+});
+
+test("footer includes session title after session id when available", () => {
+  const app = new App(makeConfig());
+  (app as any).buildIsoFooter = () => "2026-04-11T10:42:04+08:00";
+
+  const footer = (app as any).buildFooter("p2p:chat_test", {
+    conversationKey: "p2p:chat_test",
+    copilotSessionId: "session-1",
+    sessionTitle: "# Review `changes`",
+    project: "/tmp/project-a",
+    createdAt: "2026-04-09T00:00:00.000Z",
+    updatedAt: "2026-04-09T00:00:00.000Z"
+  });
+
+  assert.equal(
+    footer,
+    "2026-04-11T10:42:04+08:00  |  `/tmp/project-a` · session-1 · \\# Review \\`changes\\`"
+  );
+});
+
+test("footer truncates long session titles in the middle", () => {
+  const config = makeConfig();
+  const app = new App({
+    ...config,
+    feishu: {
+      ...config.feishu,
+      footerTitleMaxLength: 12
+    }
+  });
+  (app as any).buildIsoFooter = () => "2026-04-11T10:42:04+08:00";
+
+  const footer = (app as any).buildFooter("p2p:chat_test", {
+    conversationKey: "p2p:chat_test",
+    copilotSessionId: "session-1",
+    sessionTitle: "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhtttttttttt",
+    project: "/tmp/project-a",
+    createdAt: "2026-04-09T00:00:00.000Z",
+    updatedAt: "2026-04-09T00:00:00.000Z"
+  });
+
+  assert.equal(
+    footer,
+    "2026-04-11T10:42:04+08:00  |  `/tmp/project-a` · session-1 · hhhhh\\.\\.\\.tttt"
+  );
+});
+
+test("footer truncation respects small configured title limits", () => {
+  const config = makeConfig();
+  const app = new App({
+    ...config,
+    feishu: {
+      ...config.feishu,
+      footerTitleMaxLength: 4
+    }
+  });
+  (app as any).buildIsoFooter = () => "2026-04-11T10:42:04+08:00";
+
+  const footer = (app as any).buildFooter("p2p:chat_test", {
+    conversationKey: "p2p:chat_test",
+    copilotSessionId: "session-1",
+    sessionTitle: "abcdefghijklmnopqrstuvwxyz",
+    project: "/tmp/project-a",
+    createdAt: "2026-04-09T00:00:00.000Z",
+    updatedAt: "2026-04-09T00:00:00.000Z"
+  });
+
+  assert.equal(
+    footer,
+    "2026-04-11T10:42:04+08:00  |  `/tmp/project-a` · session-1 · a\\.\\.\\."
+  );
+});
+
+test("local ISO footer timestamp omits fractional seconds", () => {
+  const app = new App(makeConfig());
+  const rendered = (app as any).formatLocalIsoTimestamp(new Date(2026, 3, 11, 10, 42, 4, 809));
+
+  assert.match(rendered, /^2026-04-11T10:42:04[+-]\d{2}:\d{2}$/);
+  assert.doesNotMatch(rendered, /\.809/);
 });
 
 test("local command alias can prepend args and direct commands run unchanged", async () => {

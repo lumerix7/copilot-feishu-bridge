@@ -38,6 +38,7 @@ export interface AppConfig {
     sendRetryMultiplier: number;
     sendRetryMaxDelayMs: number;
     titleMaxLength: number;
+    footerTitleMaxLength: number;
   };
   copilot: {
     copilotBin: string;
@@ -86,6 +87,7 @@ interface JsonConfigShape {
       maxDelayMs?: unknown;
     };
     titleMaxLength?: unknown;
+    footerTitleMaxLength?: unknown;
   };
   copilot?: {
     copilotBin?: unknown;
@@ -233,6 +235,13 @@ export function loadConfig(): AppConfig {
         jsonConfig,
         ["feishu", "titleMaxLength"],
         { min: 8 }
+      ),
+      footerTitleMaxLength: readIntegerSetting(
+        "FEISHU_FOOTER_TITLE_MAX_LENGTH",
+        50,
+        jsonConfig,
+        ["feishu", "footerTitleMaxLength"],
+        { min: 0 }
       )
     },
     copilot: {

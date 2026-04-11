@@ -45,6 +45,10 @@ type LocalProjectCommand = {
   args: string[];
 };
 
+type SessionFooterState = {
+  title?: string;
+};
+
 type RecentSessionReplayMessage = {
   role: "user" | "assistant";
   text: string;
@@ -110,6 +114,7 @@ export class App {
   private readonly activeRuns = new Map<string, ActiveRun>();
   private readonly conversationSystemPrompts = new Map<string, string>();
   private readonly conversationReasoningEffort = new Map<string, "low" | "medium" | "high" | "xhigh">();
+  private readonly latestSessionFooterState = new Map<string, SessionFooterState>();
   private readonly warnedLocalCommandAliases = new Set<string>();
 
   constructor(private readonly config: AppConfig) {
@@ -777,7 +782,15 @@ export class App {
         }
       }
 
-      const binding = this.makeBinding(key, targetSessionId, resolvedProject, existing);
+      const sessionTitle = await this.readSessionTitleForFooter(
+        targetSessionId,
+        resolvedProject,
+        existing?.copilotSessionId === targetSessionId ? existing.sessionTitle : undefined
+      );
+      const binding = {
+        ...this.makeBinding(key, targetSessionId, resolvedProject, existing),
+        sessionTitle
+      };
       await this.store.put(binding);
 
       // Probe model info in background so /status shows the real model before the first turn
@@ -788,7 +801,7 @@ export class App {
         sessionId: targetSessionId,
         project: binding.project,
         sessionMeta,
-        sessionTitle: await this.copilot.getSessionTitle(targetSessionId, binding.project).catch(() => undefined),
+        sessionTitle,
         flags: ["current", "bound"],
         leadingLines: [
           `- **Source**: \`${resumeSource}\``,
@@ -868,23 +881,28 @@ export class App {
           : (explicitSessionId ? undefined : currentProject);
 
       if (!nextTitle) {
-        const currentTitle = await this.copilot.getSessionTitle(targetSessionId, targetProject).catch(() => undefined);
-        const fallbackTitle = existing?.copilotSessionId === targetSessionId ? existing?.sessionTitle : undefined;
+        const currentTitle = await this.readSessionTitleForFooter(
+          targetSessionId,
+          targetProject,
+          existing?.copilotSessionId === targetSessionId ? existing?.sessionTitle : undefined
+        );
         return [
           "# Rename",
           "",
           `- **Session**: \`${targetSessionId}\``,
-          `- **Title**: ${escapeMarkdownInline(currentTitle || fallbackTitle || "(none)")}`
+          `- **Title**: ${escapeMarkdownInline(currentTitle || "(none)")}`
         ].join("\n");
       }
 
       await sendEarlyUpdate(`Renaming Copilot session \`${targetSessionId}\`...`);
       try {
         const renamedTitle = await this.copilot.renameSession(targetSessionId, nextTitle, targetProject);
+        const effectiveTitle = renamedTitle || nextTitle;
+        this.rememberSessionFooterState(targetSessionId, { title: effectiveTitle });
         if (existing?.copilotSessionId === targetSessionId) {
           await this.store.put({
             ...existing,
-            sessionTitle: renamedTitle || nextTitle,
+            sessionTitle: effectiveTitle,
             updatedAt: new Date().toISOString()
           });
         }
@@ -892,7 +910,7 @@ export class App {
           "# Rename",
           "",
           `- **Session**: \`${targetSessionId}\``,
-          `- **Title**: ${escapeMarkdownInline(renamedTitle || nextTitle)}`
+          `- **Title**: ${escapeMarkdownInline(effectiveTitle)}`
         ].join("\n");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1015,14 +1033,24 @@ export class App {
             ? await this.resolveProject(sessionMeta.context.cwd, currentProject)
             : currentProject;
         const modelInfo = this.copilot.getSessionModelInfo(targetSessionId);
+        const sessionTitle = await this.readSessionTitleForFooter(
+          targetSessionId,
+          resolvedProject,
+          existing?.copilotSessionId === targetSessionId ? existing.sessionTitle : undefined
+        );
+        if (existing?.copilotSessionId === targetSessionId && sessionTitle !== existing.sessionTitle) {
+          await this.store.put({
+            ...existing,
+            sessionTitle,
+            updatedAt: new Date().toISOString()
+          });
+        }
         return this.withBodyFormat(this.renderSessionDetailText({
           title: "Session",
           sessionId: targetSessionId,
           project: resolvedProject,
           sessionMeta,
-          sessionTitle:
-            await this.copilot.getSessionTitle(targetSessionId, resolvedProject).catch(() => undefined)
-            || (existing?.copilotSessionId === targetSessionId ? existing.sessionTitle : undefined),
+          sessionTitle,
           modelInfo,
           flags: existing?.copilotSessionId === targetSessionId ? ["current", "bound"] : []
         }), sessionBodyFormat);
@@ -1034,14 +1062,24 @@ export class App {
       const sessionMeta = (await this.copilot.listSessions()).find((s) => s.sessionId === existing.copilotSessionId);
       const sessionInfo = existing.copilotSessionId ? this.copilot.getSessionModelInfo(existing.copilotSessionId) : undefined;
       const project = existing.project || this.config.project.defaultProject;
+      const sessionTitle = await this.readSessionTitleForFooter(
+        existing.copilotSessionId,
+        project,
+        existing.sessionTitle
+      );
+      if (sessionTitle !== existing.sessionTitle) {
+        await this.store.put({
+          ...existing,
+          sessionTitle,
+          updatedAt: new Date().toISOString()
+        });
+      }
       return this.withBodyFormat(this.renderSessionDetailText({
         title: "Current Session",
         sessionId: existing.copilotSessionId,
         project,
         sessionMeta,
-        sessionTitle:
-          await this.copilot.getSessionTitle(existing.copilotSessionId, project).catch(() => undefined)
-          || existing.sessionTitle,
+        sessionTitle,
         modelInfo: sessionInfo,
         flags: ["current", "bound"]
       }), sessionBodyFormat);
@@ -1378,10 +1416,15 @@ export class App {
       });
 
       const result = await handle.done;
+      const sessionTitle = await this.readSessionTitleForFooter(
+        result.sessionId,
+        project,
+        existing?.copilotSessionId === result.sessionId ? existing.sessionTitle : undefined
+      );
       const nextBinding =
         existing && existing.copilotSessionId === result.sessionId
-          ? { ...existing, updatedAt: new Date().toISOString() }
-          : this.makeBinding(key, result.sessionId, project, existing);
+          ? { ...existing, sessionTitle, updatedAt: new Date().toISOString() }
+          : { ...this.makeBinding(key, result.sessionId, project, existing), sessionTitle };
       await this.store.put(nextBinding);
       return result.output;
     } finally {
@@ -1392,9 +1435,20 @@ export class App {
   private async sendStartupReadyNotification(title: string, logLabel: string): Promise<void> {
     if (!this.config.feishu.startupNotifyChatId) return;
     try {
-      const binding = await this.store.get(`p2p:${this.config.feishu.startupNotifyChatId}`);
+      let binding = await this.store.get(`p2p:${this.config.feishu.startupNotifyChatId}`);
       if (binding?.copilotSessionId) {
         await this.copilot.probeSessionModelInfo(binding.copilotSessionId, binding.project).catch(() => {});
+        const sessionTitle = await this.readSessionTitleForFooter(
+          binding.copilotSessionId,
+          binding.project,
+          binding.sessionTitle
+        );
+        if (sessionTitle !== binding.sessionTitle) {
+          binding = {
+            ...binding,
+            sessionTitle
+          };
+        }
       }
       const [copilotInfo, feishuDiagnostics] = await Promise.all([
         this.copilot.getCopilotInfo().catch(() => undefined),
@@ -1712,17 +1766,23 @@ export class App {
 
   private buildFooter(key: string | undefined, binding?: SessionBinding): string {
     const sessionId = binding?.copilotSessionId;
+    const sessionFooterState = sessionId ? this.latestSessionFooterState.get(sessionId) : undefined;
     const sessionInfo = sessionId ? this.copilot.getSessionModelInfo(sessionId) : undefined;
     const explicitEffort = key ? this.conversationReasoningEffort.get(key) : undefined;
     const model = sessionInfo?.model;
     const effort = explicitEffort || sessionInfo?.reasoningEffort;
     const project = binding?.project;
+    const sessionTitle = sessionFooterState?.title || binding?.sessionTitle;
+    const displayedTitle = sessionTitle
+      ? escapeMarkdownInline(this.truncateMiddle(sessionTitle, this.config.feishu.footerTitleMaxLength))
+      : undefined;
     const quota = sessionId ? this.copilot.getSessionQuota(sessionId) : undefined;
     const quotaStr = quota !== undefined ? `${quota.toFixed(1)}%` : undefined;
     const parts: string[] = [
       ...(model ? [effort ? `${model} ${effort}` : model] : []),
       ...(project ? [`\`${project}\``] : []),
       ...(sessionId ? [sessionId] : []),
+      ...(displayedTitle ? [displayedTitle] : []),
       ...(quotaStr ? [quotaStr] : []),
     ];
     return `${this.buildIsoFooter()}  |  ${parts.join(" · ")}`;
@@ -1756,13 +1816,41 @@ export class App {
     const hours = String(date.getHours()).padStart(2, "0");
     const minutes = String(date.getMinutes()).padStart(2, "0");
     const seconds = String(date.getSeconds()).padStart(2, "0");
-    const millis = String(date.getMilliseconds()).padStart(3, "0");
     const offsetMinutes = -date.getTimezoneOffset();
     const sign = offsetMinutes >= 0 ? "+" : "-";
     const absoluteOffset = Math.abs(offsetMinutes);
     const offsetHours = String(Math.floor(absoluteOffset / 60)).padStart(2, "0");
     const offsetMins = String(absoluteOffset % 60).padStart(2, "0");
-    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${millis}${sign}${offsetHours}:${offsetMins}`;
+    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetMins}`;
+  }
+
+  private async readSessionTitleForFooter(
+    sessionId: string,
+    project?: string,
+    fallback?: string
+  ): Promise<string | undefined> {
+    const title = await this.copilot.getSessionTitle(sessionId, project).catch(() => undefined) || fallback;
+    if (title) {
+      this.rememberSessionFooterState(sessionId, { title });
+    }
+    return title;
+  }
+
+  private rememberSessionFooterState(sessionId: string, next: SessionFooterState): void {
+    const existing = this.latestSessionFooterState.get(sessionId) || {};
+    this.latestSessionFooterState.set(sessionId, {
+      title: next.title || existing.title
+    });
+  }
+
+  private truncateMiddle(value: string, maxLength: number): string {
+    if (value.length <= maxLength) return value;
+    if (maxLength <= 3) return value.slice(0, maxLength);
+    const tailLength = Math.floor((maxLength - 3) / 2);
+    const headLength = maxLength - 3 - tailLength;
+    return tailLength > 0
+      ? `${value.slice(0, headLength)}...${value.slice(-tailLength)}`
+      : `${value.slice(0, headLength)}...`;
   }
 
   private makeBinding(
