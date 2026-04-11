@@ -53,6 +53,8 @@ export interface AppConfig {
   };
   commands: {
     map: Record<string, string>;
+    alias: Record<string, string>;
+    direct: string[];
   };
   project: {
     allowedRoots: string[];
@@ -113,6 +115,8 @@ interface JsonConfigShape {
   };
   commands?: {
     map?: unknown;
+    alias?: unknown;
+    direct?: unknown;
   };
   [key: string]: unknown;
 }
@@ -313,7 +317,9 @@ export function loadConfig(): AppConfig {
     },
     storePath: readTextSetting("STORE_PATH", ".data/bindings.json", jsonConfig, ["paths", "storePath"]),
     commands: {
-      map: readStringMapSetting(jsonConfig, ["commands", "map"])
+      map: readStringMapSetting(jsonConfig, ["commands", "map"]),
+      alias: readStringMapSetting(jsonConfig, ["commands", "alias"]),
+      direct: readCommandNameArraySetting(jsonConfig, ["commands", "direct"])
     }
   };
 }
@@ -456,6 +462,22 @@ function readStringArraySetting(
   return value
     .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
     .map((item) => expandEnvPlaceholders(item.trim()));
+}
+
+function readCommandNameArraySetting(
+  jsonConfig: JsonConfigShape | undefined,
+  jsonPath: string[]
+): string[] {
+  const value = readJsonValue(jsonConfig, jsonPath);
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim().replace(/^\/+/, ""))
+        .filter(Boolean)
+    )
+  );
 }
 
 function readRootsSetting(

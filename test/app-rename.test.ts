@@ -41,7 +41,9 @@ function makeConfig() {
       inlineBlocks: "off"
     },
     commands: {
-      map: {}
+      map: {},
+      alias: {},
+      direct: []
     },
     project: {
       allowedRoots: ["/tmp"],

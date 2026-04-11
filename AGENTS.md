@@ -39,7 +39,7 @@
 - Keep app-level policy in [`src/core/app.ts`](./src/core/app.ts): binding lookup, command dispatch, message titles/footers, severity mapping, and when to stream vs. send status cards.
 - Copilot timeline rendering should stay append-only in spirit: tool starts, tool completions, tool output blocks, reasoning blocks, and idle probes should not reshuffle already-sent streamed pages.
 - Treat stale ACP sessions as normal. Verify existence before reuse, evict dead cached sessions, and fall back cleanly to resume-or-create behavior rather than hard failing.
-- Local project commands are intentionally explicit and allowlisted. Prefer extending the configured command map or the built-in list rather than introducing ad hoc shell execution.
+- Local project commands are intentionally explicit and allowlisted. Prefer `commands.alias` for command expansions and `commands.direct` for identity local commands; keep `commands.map` as a legacy alias field.
 - Keep project path enforcement strict. New project-binding behavior must respect allowed roots and default project constraints from config.
 - Useful runtime checks:
   - `systemctl --user status copilot-feishu-bridge`

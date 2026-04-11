@@ -41,7 +41,9 @@ function makeConfig() {
       inlineBlocks: "off"
     },
     commands: {
-      map: {}
+      map: {},
+      alias: {},
+      direct: []
     },
     project: {
       allowedRoots: ["/tmp"],
@@ -293,4 +295,95 @@ test("resume emits recent replay messages as separate status updates", async () 
     text: "[User] 2026-04-09T20:27:20.194+08:00\n\nfollow-up",
     bodyFormat: "raw-text"
   });
+});
+
+test("local command alias can prepend args and direct commands run unchanged", async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "copilot-feishu-bridge-local-"));
+  const projectDir = path.join(tempRoot, "project");
+  const storePath = path.join(tempRoot, "store.json");
+  await fs.mkdir(projectDir, { recursive: true });
+  await fs.writeFile(path.join(projectDir, ".hidden"), "hidden\n");
+
+  const app = new App({
+    ...makeConfig(),
+    project: {
+      allowedRoots: [tempRoot],
+      defaultProject: projectDir,
+      defaultSearchEnabled: true,
+      knownPaths: [],
+      listMaxCount: 100
+    },
+    commands: {
+      map: {},
+      alias: {
+        ll: "ls -A"
+      },
+      direct: ["node"]
+    },
+    storePath
+  });
+
+  const updates: string[] = [];
+  const lsResult = await app.handleIncoming({
+    chatId: "chat_test",
+    messageId: "msg_ls_alias",
+    chatType: "p2p",
+    text: "/ll"
+  }, undefined, async (update) => {
+    if (typeof update === "string") updates.push(update);
+  });
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0], "Running `ll`...\n\n```text\nll\n```");
+  assert.equal(typeof lsResult, "object");
+  assert.equal(lsResult?.bodyFormat, "raw-text");
+  assert.match(lsResult?.text || "", /\.hidden/);
+
+  const nodeResult = await app.handleIncoming({
+    chatId: "chat_test",
+    messageId: "msg_node_direct",
+    chatType: "p2p",
+    text: `/node -e "process.stdout.write('direct')"`
+  });
+
+  assert.equal(typeof nodeResult, "object");
+  assert.equal(nodeResult?.bodyFormat, "raw-text");
+  assert.equal(nodeResult?.text, "direct");
+});
+
+test("malformed local command alias is ignored with a warning", async () => {
+  const app = new App({
+    ...makeConfig(),
+    commands: {
+      map: {},
+      alias: {
+        broken: "\"unterminated"
+      },
+      direct: []
+    }
+  });
+  const warnings: unknown[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+
+  try {
+    const result = (app as any).resolveLocalProjectCommand("broken");
+    const repeatedResult = (app as any).resolveLocalProjectCommand("broken");
+
+    assert.equal(result, undefined);
+    assert.equal(repeatedResult, undefined);
+    assert.equal(warnings.length, 1);
+    assert.deepEqual(warnings[0], [
+      "invalid local command alias ignored",
+      {
+        commandName: "broken",
+        alias: "\"unterminated",
+        parseError: "unterminated double quote"
+      }
+    ]);
+  } finally {
+    console.warn = originalWarn;
+  }
 });

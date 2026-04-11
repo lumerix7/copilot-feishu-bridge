@@ -9,7 +9,7 @@ import { createCopilotBackend } from "../adapters/copilot/copilot-runtime.js";
 import { FeishuGateway } from "../adapters/feishu/feishu-gateway.js";
 import { AppConfig } from "../config/env.js";
 import { conversationKeyFor } from "./conversation-key.js";
-import { parseCommand } from "./command-router.js";
+import { parseCommand, tokenizeCommandText } from "./command-router.js";
 import { BindingStore } from "../store/binding-store.js";
 import { ActiveRun, IncomingMessage, OutgoingBodyFormat, OutgoingMessage, SessionBinding } from "../types/domain.js";
 
@@ -38,6 +38,11 @@ type AppResponse = {
   text: string;
   bodyFormat?: OutgoingBodyFormat;
   severity?: "warning" | "error";
+};
+
+type LocalProjectCommand = {
+  command: string;
+  args: string[];
 };
 
 type RecentSessionReplayMessage = {
@@ -105,6 +110,7 @@ export class App {
   private readonly activeRuns = new Map<string, ActiveRun>();
   private readonly conversationSystemPrompts = new Map<string, string>();
   private readonly conversationReasoningEffort = new Map<string, "low" | "medium" | "high" | "xhigh">();
+  private readonly warnedLocalCommandAliases = new Set<string>();
 
   constructor(private readonly config: AppConfig) {
     this.store = new BindingStore(path.resolve(this.config.storePath));
@@ -383,9 +389,14 @@ export class App {
           "",
           "## Mapped",
           "",
-          ...Object.entries(this.config.commands.map).map(([alias, bin]) =>
-            `- \`/${alias}\` run \`${bin || alias}\``
-          )
+          ...[
+            ...Object.entries(this.commandAliases()).map(([alias, bin]) =>
+              `- \`/${alias}\` run \`${bin}\``
+            ),
+            ...this.config.commands.direct.map((name) =>
+              `- \`/${name}\` run \`${name}\``
+            )
+          ].sort()
         ] : [],
         "",
         "## Notes",
@@ -1281,18 +1292,29 @@ export class App {
 
     if (command?.name === "git") {
       const project = existing?.project || this.config.project.defaultProject;
-      const commandText = ["git", ...command.args].join(" ");
-      await sendEarlyUpdate(this.commandMetaCard("Git", project, commandText));
-      return this.runGitCommand(project, command.args);
+      return this.runWrappedProjectCommand(
+        sendEarlyUpdate,
+        "git",
+        "git",
+        [],
+        command.args,
+        message.text,
+        project
+      );
     }
 
-    const resolvedLocalBin = command ? this.resolveLocalProjectCommand(command.name) : undefined;
-    if (command && resolvedLocalBin) {
-      const displayName = command.name;
+    const resolvedLocalCommand = command ? this.resolveLocalProjectCommand(command.name) : undefined;
+    if (command && resolvedLocalCommand) {
       const project = existing?.project || this.config.project.defaultProject;
-      const commandText = [displayName, ...command.args].join(" ");
-      await sendEarlyUpdate(this.commandMetaCard(displayName, project, commandText));
-      return this.runLocalCommand(resolvedLocalBin, project, command.args, displayName);
+      return this.runWrappedProjectCommand(
+        sendEarlyUpdate,
+        command.name,
+        resolvedLocalCommand.command,
+        resolvedLocalCommand.args,
+        command.args,
+        message.text,
+        project
+      );
     }
 
     if (activeRun) {
@@ -1378,7 +1400,10 @@ export class App {
   }
 
   private configuredLocalCommandNames(): string[] {
-    return Object.keys(this.config.commands.map);
+    return Array.from(new Set([
+      ...Object.keys(this.commandAliases()),
+      ...this.config.commands.direct
+    ]));
   }
 
   private builtinLocalProjectCommandNames(): string[] {
@@ -1389,13 +1414,51 @@ export class App {
     ];
   }
 
-  private resolveLocalProjectCommand(commandName: string): string | undefined {
-    if (this.builtinLocalProjectCommandNames().includes(commandName)) return commandName;
-    return this.config.commands.map[commandName];
+  private commandAliases(): Record<string, string> {
+    return {
+      ...this.config.commands.map,
+      ...this.config.commands.alias
+    };
+  }
+
+  private resolveLocalProjectCommand(commandName: string): LocalProjectCommand | undefined {
+    const alias = this.commandAliases()[commandName];
+    if (alias) {
+      const parsed = tokenizeCommandText(alias);
+      if (!parsed.parseError && parsed.tokens.length > 0) {
+        const [aliasCommand, ...aliasArgs] = parsed.tokens;
+        return {
+          command: aliasCommand,
+          args: aliasArgs
+        };
+      }
+      this.warnInvalidLocalCommandAlias(commandName, alias, parsed.parseError || "empty alias");
+    }
+    if (
+      this.builtinLocalProjectCommandNames().includes(commandName) ||
+      this.config.commands.direct.includes(commandName)
+    ) {
+      return {
+        command: commandName,
+        args: []
+      };
+    }
+    return undefined;
   }
 
   private isLocalProjectCommand(commandName: string): boolean {
     return Boolean(this.resolveLocalProjectCommand(commandName));
+  }
+
+  private warnInvalidLocalCommandAlias(commandName: string, alias: string, parseError: string): void {
+    const key = `${commandName}\0${alias}\0${parseError}`;
+    if (this.warnedLocalCommandAliases.has(key)) return;
+    this.warnedLocalCommandAliases.add(key);
+    console.warn("invalid local command alias ignored", {
+      commandName,
+      alias,
+      parseError
+    });
   }
 
   private localProjectCommandNames(): string[] {
@@ -2045,60 +2108,62 @@ export class App {
     }
   }
 
-  private async runGitCommand(project: string, args: string[]): Promise<string | AppResponse> {
+  private async runWrappedCommand(
+    command: string,
+    project: string,
+    args: string[],
+    displayName = command
+  ): Promise<string | AppResponse> {
     try {
-      const { stdout, stderr } = await execFileAsync("git", args, {
+      const { stdout, stderr } = await execFileAsync(command, args, {
         cwd: project,
         timeout: GIT_COMMAND_TIMEOUT_MS,
         maxBuffer: 8 * 1024 * 1024
       });
-      const combined = [stdout, stderr].filter(Boolean).join(stderr && stdout ? "\n" : "");
-      return this.renderFencedBlock("text", this.truncateOutput(combined || "(no output)"));
+      const combined = this.combineCommandOutput(stdout, stderr);
+      return {
+        text: this.renderWrappedCommandOutput(combined),
+        bodyFormat: "raw-text"
+      };
     } catch (error) {
       const maybe = error as Error & { code?: number | string; stdout?: string; stderr?: string; signal?: NodeJS.Signals };
-      const output = [maybe.stdout, maybe.stderr].filter(Boolean).join(maybe.stdout && maybe.stderr ? "\n" : "");
+      const output = this.combineCommandOutput(maybe.stdout, maybe.stderr);
+      const formatted = this.renderWrappedCommandOutput(
+        output || maybe.message || `${displayName} command failed`,
+        maybe.code ?? maybe.signal
+      );
       return {
-        severity: "warning",
-        text: [
-          `- **Status**: ⚠️ \`failed\``,
-          `- **Code**: \`${String(maybe.code ?? "(unknown)")}\``,
-          "",
-          this.renderFencedBlock("text", this.truncateOutput(output || maybe.message || "git command failed"))
-        ].join("\n")
+        severity: (maybe.code == null && !maybe.signal) || maybe.code === 0 || maybe.code === "0" ? undefined : "error",
+        text: formatted,
+        bodyFormat: "raw-text"
       };
     }
   }
 
-  private async runLocalCommand(
-    bin: string,
-    project: string,
+  private async runWrappedProjectCommand(
+    sendEarlyUpdate: (text: string) => Promise<void>,
+    displayName: string,
+    command: string,
+    commandArgs: string[],
     args: string[],
-    displayName = bin
+    rawInput: string,
+    project: string
   ): Promise<string | AppResponse> {
-    // Feishu auto-converts filenames (e.g. README.md) to markdown links [README.md](http://readme.md/)
-    // Strip these back to plain text before passing to the binary
-    args = args.map(arg => arg.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"));
-    try {
-      const { stdout, stderr } = await execFileAsync(bin, args, {
-        cwd: project,
-        timeout: GIT_COMMAND_TIMEOUT_MS,
-        maxBuffer: 8 * 1024 * 1024
-      });
-      const combined = [stdout, stderr].filter(Boolean).join(stderr && stdout ? "\n" : "");
-      return this.renderFencedBlock("text", this.truncateOutput(combined || "(no output)"));
-    } catch (error) {
-      const maybe = error as Error & { code?: number | string; stdout?: string; stderr?: string; signal?: NodeJS.Signals };
-      const output = [maybe.stdout, maybe.stderr].filter(Boolean).join(maybe.stdout && maybe.stderr ? "\n" : "");
-      return {
-        severity: "warning",
-        text: [
-          `- **Status**: ⚠️ \`failed\``,
-          `- **Code**: \`${String(maybe.code ?? "(unknown)")}\``,
-          "",
-          this.renderFencedBlock("text", this.truncateOutput(output || maybe.message || `${displayName} command failed`))
-        ].join("\n")
-      };
+    const execArgs = [...commandArgs, ...args.map((arg) => arg.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"))];
+    await sendEarlyUpdate(this.renderLocalCommandPreamble(displayName, execArgs, rawInput));
+    return this.runWrappedCommand(command, project, execArgs, displayName);
+  }
+
+  private combineCommandOutput(stdout?: string, stderr?: string): string {
+    return [stdout, stderr].filter(Boolean).join(stderr && stdout ? "\n" : "");
+  }
+
+  private renderWrappedCommandOutput(value: string, code?: number | string): string {
+    const body = this.truncateOutput(value || "(no output)");
+    if (code === undefined || code === 0 || code === "0") {
+      return body;
     }
+    return this.truncateOutput(`Code: ${String(code)}\n\n${value || "(no output)"}`);
   }
 
   private truncateOutput(value: string): string {
@@ -2116,8 +2181,20 @@ export class App {
     return `${fence}${language}\n${value}\n${fence}`;
   }
 
-  private commandMetaCard(displayName: string, project: string, _commandText: string): string {
-    return `Running \`${displayName}\` in project \`${project}\`...`;
+  private renderLocalCommandPreamble(
+    command: string,
+    args: string[],
+    rawInput: string
+  ): string {
+    const normalizedInput = rawInput
+      .replace(/\r\n/g, "\n")
+      .trimStart()
+      .replace(/^\//, "");
+    return [
+      `Running \`${command}\`...`,
+      "",
+      this.renderFencedBlock("text", normalizedInput)
+    ].join("\n");
   }
 
   private async readInstalledPackageVersion(packageName: string): Promise<string | undefined> {

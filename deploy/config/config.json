@@ -43,8 +43,10 @@
     "storePath": "$HOME/.local/share/copilot-feishu-bridge/bindings.json"
   },
   "commands": {
-    "map": {
+    "alias": {
       "todo": "todoist-cli"
-    }
+    },
+    "direct": [],
+    "map": {}
   }
 }

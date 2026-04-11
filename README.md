@@ -105,6 +105,7 @@ All commands are slash commands in a Feishu DM to the bot.
 - `/project [list|bind [<path>|-n <index>|-m]|unbind <path>] [-h|--help]` show the current project or manage project bindings
 - `/git [args...]` run `git` directly in the current bound project
 - `/cat`, `/cp`, `/find`, `/head`, `/ln`, `/ls`, `/mkdir`, `/mv`, `/pwd`, `/readlink`, `/rg`, `/rmdir`, `/sha256sum`, `/tail`, `/tar`, `/touch`, `/trash`, `/trash-list`, `/trash-restore`, `/tree`, `/wc` run local project commands
+- `commands.alias` can expose or expand local slash commands such as `/todo` -> `todoist-cli` or `/ls` -> `ls -A`; `commands.direct` exposes identity commands such as `/systemctl`
 
 ### Diagnostics
 
