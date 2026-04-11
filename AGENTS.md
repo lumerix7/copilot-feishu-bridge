@@ -32,6 +32,7 @@
 
 - Be proactive: when a durable rule changes, update this file concisely; keep details in `README.md` or `docs/`.
 - Prefer ACP-backed behavior over bridge-side emulation. Session existence, resume behavior, model state, and conversation history should come from the real Copilot session whenever possible.
+- Keep `/rename` aligned with sibling bridges; prefer the native Copilot title change path and use `--session <session-id>` for explicit targeting.
 - Keep command parsing centralized in [`src/core/command-router.ts`](./src/core/command-router.ts). If the slash-command surface changes, update the router, help text, and this file together.
 - Keep Feishu rendering decisions centralized in [`src/adapters/feishu/feishu-gateway.ts`](./src/adapters/feishu/feishu-gateway.ts). Streaming pagination and retry behavior should stay in one place.
 - Large fenced output can still render differently across Feishu desktop and mobile clients; keep the gateway line-safe and keep the caveat documented in [`docs/feishu-rendering-caveats.md`](./docs/feishu-rendering-caveats.md).

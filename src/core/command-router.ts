@@ -6,6 +6,7 @@ export type CommandName =
   | "new"
   | "session"
   | "resume"
+  | "rename"
   | "stop"
   | "compact"
   | "model"
@@ -113,6 +114,7 @@ export const BUILTIN_COMMAND_NAMES: readonly string[] = [
   "new",
   "session",
   "resume",
+  "rename",
   "stop",
   "compact",
   "model",

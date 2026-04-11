@@ -22,6 +22,7 @@ type SessionListEntry = {
   modifiedAt?: string;
   cwd?: string;
   preview?: string;
+  title?: string;
   isRemote?: boolean;
 };
 
@@ -359,6 +360,7 @@ export class App {
         "- `/new [-C <dir>] [-h|--help]` create and bind a fresh Copilot session",
         "- `/session [<session-id>|list [options]] [-h|--help]` show the current session, inspect a specific session, or browse recent sessions",
         "- `/resume [<session-id>|-|--last|-n <index>|list] [-h|--help]` resume a session",
+        "- `/rename [--session <session-id>] ['name'|-- name] [-h|--help]` show or change a Copilot session title",
         "- `/compact` compact the current bound Copilot session",
         "- `/stop` stop the current active run",
         "",
@@ -761,6 +763,7 @@ export class App {
         sessionId: targetSessionId,
         project: binding.project,
         sessionMeta,
+        sessionTitle: await this.copilot.getSessionTitle(targetSessionId, binding.project).catch(() => undefined),
         flags: ["current", "bound"],
         leadingLines: [
           `- **Source**: \`${resumeSource}\``,
@@ -774,6 +777,119 @@ export class App {
         }
       }
       return sections;
+    }
+
+    if (command?.name === "rename") {
+      const renameArgs = new ArgCursor(command.args);
+      if (renameArgs.takeFlag("-h", "--help")) {
+        return this.renameHelpText();
+      }
+      const explicitSessionId = renameArgs.takeOption("--session");
+      if (explicitSessionId === "") {
+        return this.renderCommandError(
+          "Rename",
+          "missing value for `--session <session-id>`",
+          "`/rename [--session <session-id>] ['name'|-- name] [-h|--help]`"
+        );
+      }
+
+      const currentProject = existing?.project || this.config.project.defaultProject;
+      const sessionId = explicitSessionId || existing?.copilotSessionId;
+      if (!sessionId) {
+        return this.renderCommandWarning(
+          "Rename",
+          "No session is currently bound. Use `/new`, `/resume`, or `/session list` first, or pass `/rename --session <session-id>`."
+        );
+      }
+      if (activeRun && sessionId === existing?.copilotSessionId) {
+        return `Cannot rename while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
+      }
+
+      let nextTitle: string | undefined;
+      if (renameArgs.peek() === "--") {
+        renameArgs.shift();
+        const literalTitle = renameArgs.remaining().join(" ").trim();
+        if (!literalTitle) {
+          return this.renderCommandError(
+            "Rename",
+            "missing rename text after `--`",
+            "`/rename [--session <session-id>] ['name'|-- name] [-h|--help]`"
+          );
+        }
+        nextTitle = literalTitle;
+      } else {
+        const positionalArgs = renameArgs.remaining();
+        if (positionalArgs.some((arg) => arg === "-h" || arg === "--help")) {
+          return this.renameHelpText();
+        }
+        if (positionalArgs.length > 1 || positionalArgs[0]?.startsWith("-")) {
+          const error = positionalArgs[0]?.startsWith("-")
+            ? `unsupported rename option \`${positionalArgs[0]}\``
+            : "multiple bare rename arguments require quotes or `--`";
+          return this.renderCommandError(
+            "Rename",
+            error,
+            "`/rename [--session <session-id>] ['name'|-- name] [-h|--help]`"
+          );
+        }
+        nextTitle = positionalArgs[0]?.trim() || undefined;
+      }
+
+      const targetSessionId = sessionId;
+      const targetSessionMeta = (await this.copilot.listSessions()).find((s) => s.sessionId === targetSessionId);
+      const targetProject =
+        targetSessionMeta?.context?.cwd
+          ? await this.resolveProject(targetSessionMeta.context.cwd, currentProject)
+          : (explicitSessionId ? undefined : currentProject);
+
+      if (!nextTitle) {
+        const currentTitle = await this.copilot.getSessionTitle(targetSessionId, targetProject).catch(() => undefined);
+        const fallbackTitle = existing?.copilotSessionId === targetSessionId ? existing?.sessionTitle : undefined;
+        return [
+          "# Rename",
+          "",
+          `- **Session**: \`${targetSessionId}\``,
+          `- **Title**: ${escapeMarkdownInline(currentTitle || fallbackTitle || "(none)")}`
+        ].join("\n");
+      }
+
+      await sendEarlyUpdate(`Renaming Copilot session \`${targetSessionId}\`...`);
+      try {
+        const renamedTitle = await this.copilot.renameSession(targetSessionId, nextTitle, targetProject);
+        if (existing?.copilotSessionId === targetSessionId) {
+          await this.store.put({
+            ...existing,
+            sessionTitle: renamedTitle || nextTitle,
+            updatedAt: new Date().toISOString()
+          });
+        }
+        return [
+          "# Rename",
+          "",
+          `- **Session**: \`${targetSessionId}\``,
+          `- **Title**: ${escapeMarkdownInline(renamedTitle || nextTitle)}`
+        ].join("\n");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/CAPIError:\s*400\b/i.test(message)) {
+          console.warn("copilot rename failed", {
+            sessionId: targetSessionId,
+            project: targetProject,
+            requestedTitle: nextTitle,
+            error: message
+          });
+          return this.renderCommandWarning(
+            "Rename",
+            "Copilot ACP could not rename this session.",
+            undefined,
+            [
+              `- **Details**: ${escapeMarkdownInline(message)}`,
+              "- **Hint**: Try `/resume` first; some sessions cannot be renamed over ACP."
+            ]
+          );
+        }
+        return this.renderCommandError("Rename", message);
+      }
     }
 
     if (command?.name === "session") {
@@ -879,6 +995,9 @@ export class App {
           sessionId: targetSessionId,
           project: resolvedProject,
           sessionMeta,
+          sessionTitle:
+            await this.copilot.getSessionTitle(targetSessionId, resolvedProject).catch(() => undefined)
+            || (existing?.copilotSessionId === targetSessionId ? existing.sessionTitle : undefined),
           modelInfo,
           flags: existing?.copilotSessionId === targetSessionId ? ["current", "bound"] : []
         }), sessionBodyFormat);
@@ -895,6 +1014,9 @@ export class App {
         sessionId: existing.copilotSessionId,
         project,
         sessionMeta,
+        sessionTitle:
+          await this.copilot.getSessionTitle(existing.copilotSessionId, project).catch(() => undefined)
+          || existing.sessionTitle,
         modelInfo: sessionInfo,
         flags: ["current", "bound"]
       }), sessionBodyFormat);
@@ -1314,6 +1436,7 @@ export class App {
       case "new": return "New Session";
       case "session": return "Session";
       case "resume": return "Resume Session";
+      case "rename": return "Rename";
       case "stop": return "Stop";
       case "compact": return "Compact";
       case "model": return "Model";
@@ -1334,6 +1457,7 @@ export class App {
       case "new": return "✨";
       case "session": return "🧭";
       case "resume": return "↩️";
+      case "rename": return "✏️";
       case "stop": return "⏹️";
       case "compact": return "🗜️";
       case "model": return "🧠";
@@ -1359,6 +1483,7 @@ export class App {
       case "help":
       case "status":
       case "session":
+      case "rename":
       case "project":
       case "model":
       case "system":
@@ -1418,6 +1543,24 @@ export class App {
         `# ${title}`,
         "",
         `- **Error**: ${error}`,
+        ...(usage ? [`- **Usage**: ${usage}`] : []),
+        ...extraLines
+      ].join("\n")
+    };
+  }
+
+  private renderCommandWarning(
+    title: string,
+    warning: string,
+    usage?: string,
+    extraLines: string[] = []
+  ): AppResponse {
+    return {
+      severity: "warning",
+      text: [
+        `# ${title}`,
+        "",
+        `- **Warning**: ${warning}`,
         ...(usage ? [`- **Usage**: ${usage}`] : []),
         ...extraLines
       ].join("\n")
@@ -1516,6 +1659,7 @@ export class App {
     return {
       conversationKey,
       copilotSessionId,
+      sessionTitle: defaults?.copilotSessionId === copilotSessionId ? defaults?.sessionTitle : undefined,
       project,
       searchEnabled: defaults?.searchEnabled ?? this.config.project.defaultSearchEnabled,
       createdAt: defaults?.createdAt || now,
@@ -1615,11 +1759,12 @@ export class App {
     sessionId: string;
     project: string;
     sessionMeta?: SessionMetadata;
+    sessionTitle?: string;
     modelInfo?: { model?: string; reasoningEffort?: string };
     leadingLines?: string[];
     flags?: string[];
   }): string {
-    const { title, sessionId, project, sessionMeta, modelInfo, leadingLines = [], flags = [] } = options;
+    const { title, sessionId, project, sessionMeta, sessionTitle, modelInfo, leadingLines = [], flags = [] } = options;
     const lastMessage = sessionMeta?.summary || "(no preview)";
     return [
       `# ${title}`,
@@ -1636,6 +1781,7 @@ export class App {
       "- **Last message**:",
       "",
       this.renderFencedBlock("text", lastMessage),
+      `- **Title**: ${escapeMarkdownInline(sessionTitle || "(none)")}`,
       `- **Flags**: ${flags.length > 0 ? flags.map((flag) => this.formatListFlag(flag)).join(", ") : "-"}`
     ].join("\n");
   }
@@ -1714,12 +1860,13 @@ export class App {
     project?: string
   ): Promise<SessionListEntry[]> {
     const sessions = await this.copilot.listSessions(project, { limit: Math.max(1, limit) });
-    const entries = sessions.map((s) => ({
+    const entries: SessionListEntry[] = sessions.map((s) => ({
       sessionId: s.sessionId,
       createdAt: s.startTime?.toISOString(),
       modifiedAt: s.modifiedTime?.toISOString(),
       cwd: s.context?.cwd,
       preview: s.summary,
+      title: undefined,
       isRemote: s.isRemote,
     }));
     // Enrich with last user message in parallel (best-effort)
@@ -1737,6 +1884,18 @@ export class App {
         // keep summary fallback
       }
     }));
+    await Promise.allSettled(entries.map(async (entry) => {
+      entry.title = await this.copilot.getSessionTitle(entry.sessionId, entry.cwd);
+    }));
+    const bindings = await this.store.list().catch(() => []);
+    const bindingTitles = new Map(
+      bindings
+        .filter((binding) => binding.copilotSessionId && binding.sessionTitle)
+        .map((binding) => [binding.copilotSessionId!, binding.sessionTitle!])
+    );
+    for (const entry of entries) {
+      if (!entry.title) entry.title = bindingTitles.get(entry.sessionId);
+    }
     return entries;
   }
 
@@ -1756,8 +1915,8 @@ export class App {
     const lines = [
       `# ${title}`,
       "",
-      "| # | Project | Updated | Session | Last message | Flags |",
-      "| --- | --- | --- | --- | --- | --- |"
+      "| # | Project | Updated | Session | Last message | Title | Flags |",
+      "| --- | --- | --- | --- | --- | --- | --- |"
     ];
     for (const [index, session] of sessions.entries()) {
       const isCurrentSession = session.sessionId === boundSessionId;
@@ -1767,7 +1926,7 @@ export class App {
         session.isRemote ? "remote" : ""
       ].filter(Boolean);
       lines.push(
-        `| ${index + 1} | ${escapeMarkdownCell(session.cwd || "(unknown)")} | ${escapeMarkdownCell(this.formatAnyTimestamp(session.modifiedAt ?? session.createdAt))} | ${escapeMarkdownCell(session.sessionId)} | ${escapeMarkdownCell(session.preview || "(no preview)")} | ${escapeMarkdownCell(flags.length > 0 ? flags.map((flag) => this.formatListFlag(flag)).join(", ") : "-")} |`
+        `| ${index + 1} | ${escapeMarkdownCell(session.cwd || "(unknown)")} | ${escapeMarkdownCell(this.formatAnyTimestamp(session.modifiedAt ?? session.createdAt))} | ${escapeMarkdownCell(session.sessionId)} | ${escapeMarkdownCell(session.preview || "(no preview)")} | ${escapeMarkdownCell(session.title || "-")} | ${escapeMarkdownCell(flags.length > 0 ? flags.map((flag) => this.formatListFlag(flag)).join(", ") : "-")} |`
       );
     }
     return lines.join("\n");
@@ -2205,6 +2364,37 @@ export class App {
     ].join("\n");
   }
 
+  private renameHelpText(): string {
+    return [
+      "# Rename",
+      "",
+      "Show or change a Copilot session title.",
+      "",
+      "## Usage",
+      "",
+      "### `/rename` - Show the current bound session title.",
+      "",
+      "### `/rename [options] ['name'|-- name]` - Show or change one session title.",
+      "",
+      "#### Options",
+      "",
+      "- `--session <session-id>` Target one explicit session id without rebinding.",
+      "- `'name'` Set the session title when shell-style parsing leaves one positional argument.",
+      "- `--` Stop option parsing; everything after it becomes the new title.",
+      "",
+      "### General",
+      "",
+      "- `-h, --help` Show rename help.",
+      "",
+      "## Examples",
+      "",
+      "- `/rename` - show the current bound session title",
+      "- `/rename 'Review changes'` - rename the current bound session title",
+      "- `/rename --session session-123 'Review changes'` - rename one explicit session without rebinding",
+      "- `/rename -- -h` - set the current bound session title to `-h`"
+    ].join("\n");
+  }
+
   private sessionsHelpText(): string {
     return [
       "# Session",
@@ -2369,4 +2559,8 @@ export class App {
 
 function escapeMarkdownCell(value: string): string {
   return value.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
+}
+
+function escapeMarkdownInline(value: string): string {
+  return value.replace(/([\\`*_{}\[\]()#+.!])/g, "\\$1");
 }

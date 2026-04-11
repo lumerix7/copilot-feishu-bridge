@@ -42,6 +42,7 @@ export interface CopilotBackend {
   stop(runId: string): Promise<boolean>;
   compact(sessionId: string, workingDirectory?: string): Promise<{ success: boolean; tokensRemoved: number; messagesRemoved: number }>;
   getSession(sessionId: string): Promise<string | undefined>;
+  getSessionTitle(sessionId: string, workingDirectory?: string): Promise<string | undefined>;
   listSessions(project?: string, options?: { limit?: number }): Promise<SessionMetadata[]>;
   listModels(): Promise<ModelInfo[]>;
   getCopilotInfo(): Promise<CopilotInfo>;
@@ -50,4 +51,5 @@ export interface CopilotBackend {
   getSessionQuota(sessionId: string): number | undefined;
   probeSessionModelInfo(sessionId: string, workingDirectory?: string): Promise<SessionModelInfo | undefined>;
   setSessionModel(sessionId: string, model: string, reasoningEffort?: "low" | "medium" | "high" | "xhigh", workingDirectory?: string): Promise<void>;
+  renameSession(sessionId: string, title: string, workingDirectory?: string): Promise<string | undefined>;
 }

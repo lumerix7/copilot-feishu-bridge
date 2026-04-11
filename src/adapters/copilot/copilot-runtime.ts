@@ -383,6 +383,14 @@ export class AcpCopilotBackend implements CopilotBackend {
     }
   }
 
+  async getSessionTitle(sessionId: string): Promise<string | undefined> {
+    try {
+      return await this.acpClient.readSessionTitle(sessionId);
+    } catch {
+      return undefined;
+    }
+  }
+
   async listSessions(project?: string, options?: { limit?: number }): Promise<SessionMetadata[]> {
     try {
       const filter = project ? { cwd: project } : undefined;
@@ -438,6 +446,10 @@ export class AcpCopilotBackend implements CopilotBackend {
 
   async setSessionModel(sessionId: string, model: string, reasoningEffort?: "low" | "medium" | "high" | "xhigh", workingDirectory?: string): Promise<void> {
     await this.acpClient.setSessionModel(sessionId, model, reasoningEffort, workingDirectory);
+  }
+
+  async renameSession(sessionId: string, title: string, workingDirectory?: string): Promise<string | undefined> {
+    return this.acpClient.renameSession(sessionId, title, workingDirectory);
   }
 
   async shutdown(): Promise<void> {

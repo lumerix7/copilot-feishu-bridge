@@ -87,10 +87,13 @@ All commands are slash commands in a Feishu DM to the bot.
 - `/new [-C <dir>] [-h|--help]` create and bind a fresh Copilot session
 - `/session [<session-id>|list [options]] [-h|--help]` show the current session, inspect a specific session, or browse recent sessions
 - `/resume [<session-id>|--last|-n <index>|--list] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session
+- `/rename [--session <session-id>] ['name'|-- name] [-h|--help]` show or change a Copilot session title
 - `/compact` compact the current bound Copilot session
 - `/stop` stop the current active run
 
 `--raw-markdown` returns fenced source markdown for `/help` and `/session` instead of the normal rendered card body.
+
+> **Attention:** If Copilot ACP starts returning policy, authorization, or other feature errors, keep the raw ACP error details visible in Feishu and try re-login plus a fresh `/new` session first; that can clear stale session/auth state.
 
 ### Copilot
 

@@ -24,6 +24,7 @@ export class AcpClient {
   private sessions = new Map<string, CopilotSession>();
   private sessionWorkingDirectory = new Map<string, string>();
   private sessionModelInfo = new Map<string, SessionModelInfo>();
+  private sessionTitles = new Map<string, string>();
 
   private getOrCreateClient(): CopilotClient {
     if (!this.client || this.client.getState() === 'error') {
@@ -47,6 +48,9 @@ export class AcpClient {
         model: event.data.newModel,
         reasoningEffort: event.data.reasoningEffort,
       });
+    });
+    session.on('session.title_changed', (event) => {
+      this.sessionTitles.set(session.sessionId, event.data.title);
     });
     session.on('assistant.usage', (event) => {
       const current = this.sessionModelInfo.get(session.sessionId);
@@ -192,6 +196,7 @@ export class AcpClient {
       await session.disconnect().catch(() => {});
       this.sessions.delete(sessionId);
       this.sessionWorkingDirectory.delete(sessionId);
+      this.sessionTitles.delete(sessionId);
     }
     const client = this.getOrCreateClient();
     await client.deleteSession(sessionId);
@@ -241,12 +246,104 @@ export class AcpClient {
         }
       }
     }
+    if (!this.sessionTitles.has(sessionId)) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const event = messages[i];
+        if (event.type === 'session.title_changed' && event.data.title.trim()) {
+          this.sessionTitles.set(sessionId, event.data.title);
+          break;
+        }
+      }
+    }
     return messages;
+  }
+
+  getSessionTitle(sessionId: string): string | undefined {
+    return this.sessionTitles.get(sessionId);
+  }
+
+  async readSessionTitle(sessionId: string): Promise<string | undefined> {
+    if (this.sessionTitles.has(sessionId)) return this.sessionTitles.get(sessionId);
+    try {
+      await this.getSessionMessages(sessionId);
+    } catch {
+      // ignore
+    }
+    return this.sessionTitles.get(sessionId);
+  }
+
+  async renameSession(sessionId: string, title: string, workingDirectory?: string): Promise<string | undefined> {
+    const session = await this.getOrResumeSession(sessionId, workingDirectory);
+    const currentTitle = this.sessionTitles.get(sessionId);
+    const postIdleTitleGraceMs = 200;
+    let resolveDone: (value: string | undefined) => void;
+    let rejectDone: (reason?: unknown) => void;
+    const done = new Promise<string | undefined>((resolve, reject) => {
+      resolveDone = resolve;
+      rejectDone = reject;
+    });
+    let settled = false;
+    let idleGraceTimeout: NodeJS.Timeout | undefined;
+    let titleSeen = false;
+    const finishResolve = (value: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      if (idleGraceTimeout) clearTimeout(idleGraceTimeout);
+      resolveDone(value);
+    };
+    const finishReject = (reason: unknown): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      if (idleGraceTimeout) clearTimeout(idleGraceTimeout);
+      rejectDone(reason);
+    };
+    const timeoutId = setTimeout(() => {
+      finishResolve(this.sessionTitles.get(sessionId) ?? currentTitle ?? title);
+    }, 15000);
+    const unsubTitleChanged = session.on("session.title_changed", (event) => {
+      const nextTitle = event.data.title.trim();
+      if (!nextTitle) return;
+      titleSeen = true;
+      finishResolve(nextTitle);
+    });
+    const unsubIdle = session.on("session.idle", () => {
+      if (settled) return;
+      if (titleSeen) {
+        finishResolve(this.sessionTitles.get(sessionId) ?? currentTitle ?? title);
+        return;
+      }
+      if (idleGraceTimeout) clearTimeout(idleGraceTimeout);
+      idleGraceTimeout = setTimeout(() => {
+        finishResolve(this.sessionTitles.get(sessionId) ?? currentTitle ?? title);
+      }, postIdleTitleGraceMs);
+    });
+    const unsubError = session.on("session.error", (event) => {
+      const error = new Error(event.data.message);
+      error.stack = event.data.stack;
+      finishReject(error);
+    });
+    try {
+      await session.send({ prompt: `/rename ${JSON.stringify(title)}` });
+      const resolvedTitle = await done;
+      if (resolvedTitle?.trim()) {
+        this.sessionTitles.set(sessionId, resolvedTitle);
+      }
+      return resolvedTitle;
+    } finally {
+      clearTimeout(timeoutId);
+      if (idleGraceTimeout) clearTimeout(idleGraceTimeout);
+      unsubTitleChanged();
+      unsubIdle();
+      unsubError();
+    }
   }
 
   removeSession(sessionId: string): void {
     this.sessions.delete(sessionId);
     this.sessionWorkingDirectory.delete(sessionId);
+    this.sessionTitles.delete(sessionId);
   }
 
   async compactSession(sessionId: string, workingDirectory?: string): Promise<{ success: boolean; tokensRemoved: number; messagesRemoved: number }> {
@@ -277,6 +374,7 @@ export class AcpClient {
       this.client = null;
       this.sessions.clear();
       this.sessionWorkingDirectory.clear();
+      this.sessionTitles.clear();
     }
   }
 }

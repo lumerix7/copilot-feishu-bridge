@@ -10,6 +10,7 @@ interface LegacySessionBinding {
   conversationKey: string;
   copilotSessionId?: string;
   codexSessionId?: string;
+  sessionTitle?: string;
   workspace?: string;
   project?: string;
   searchEnabled?: boolean;
@@ -60,6 +61,7 @@ export class BindingStore {
           .map((item) => ({
             conversationKey: item.conversationKey,
             copilotSessionId: item.copilotSessionId || item.codexSessionId,
+            sessionTitle: item.sessionTitle,
             project: item.project || item.workspace || "",
             searchEnabled: item.searchEnabled,
             model: item.model,

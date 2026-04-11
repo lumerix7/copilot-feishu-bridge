@@ -71,6 +71,7 @@ function makeBackend(options?: {
     stop: async () => false,
     compact: async () => ({ success: true, tokensRemoved: 0, messagesRemoved: 0 }),
     getSession: async (sessionId: string) => (sessionExists ? sessionId : undefined),
+    getSessionTitle: async () => undefined,
     listSessions: async () => sessions,
     listModels: async () => [],
     getCopilotInfo: async () => {
@@ -80,7 +81,8 @@ function makeBackend(options?: {
     getSessionModelInfo: () => undefined,
     getSessionQuota: () => undefined,
     probeSessionModelInfo: async () => undefined,
-    setSessionModel: async () => {}
+    setSessionModel: async () => {},
+    renameSession: async () => undefined
   };
 }
 
@@ -199,7 +201,7 @@ test("resume last aliases render source as last", async () => {
 
     assert.equal(typeof result, "string");
     assert.match(String(result), /^# Resume Session\n\n- \*\*Source\*\*: `last`\n\n- \*\*Session\*\*: `session-1`/);
-    assert.match(String(result), /- \*\*Last message\*\*:\n\n```text\nsession summary\n```\n- \*\*Flags\*\*: `current`, bound$/);
+    assert.match(String(result), /- \*\*Last message\*\*:\n\n```text\nsession summary\n```\n- \*\*Title\*\*: \\\(none\\\)\n- \*\*Flags\*\*: `current`, bound$/);
   }
 });
 
