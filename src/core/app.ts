@@ -745,7 +745,13 @@ export class App {
       await sendEarlyUpdate(`Resolving session \`${targetSessionId}\`...`);
       const resolvedSessionId = await this.copilot.getSession(targetSessionId);
       if (!resolvedSessionId) {
-        return this.renderCommandError("Resume", `Session not found: \`${targetSessionId}\``);
+        return this.renderCommandError(
+          "Resume",
+          `Session not found: \`${targetSessionId}\``,
+          undefined,
+          ["- **Note**: Use `/resume list` or `/session list` to find resumable sessions."],
+          "error"
+        );
       }
       targetSessionId = resolvedSessionId;
       const sessionMeta = (await this.copilot.listSessions()).find((s) => s.sessionId === targetSessionId);
@@ -895,7 +901,7 @@ export class App {
             undefined,
             [
               `- **Details**: ${escapeMarkdownInline(message)}`,
-              "- **Hint**: Try `/resume` first; some sessions cannot be renamed over ACP."
+              "- **Note**: Use `/resume` first; some sessions cannot be renamed over ACP."
             ]
           );
         }
@@ -1598,10 +1604,11 @@ export class App {
     title: string,
     error: string,
     usage?: string,
-    extraLines: string[] = []
+    extraLines: string[] = [],
+    severity: AppResponse["severity"] = "warning"
   ): AppResponse {
     return {
-      severity: "warning",
+      severity,
       text: [
         `# ${title}`,
         "",

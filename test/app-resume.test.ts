@@ -183,6 +183,25 @@ test("resume without a selector warns and points to explicit latest aliases", as
   );
 });
 
+test("resume missing session renders an error card with resume-list guidance", async () => {
+  const app = new App(makeConfig());
+  (app as unknown as { copilot: unknown }).copilot = makeBackend({ sessionExists: false });
+
+  const result = await app.handleIncoming({
+    chatId: "chat_test",
+    messageId: "msg_test",
+    chatType: "p2p",
+    text: "/resume session-missing"
+  });
+
+  assert.equal(typeof result, "object");
+  assert.equal((result as { severity?: string }).severity, "error");
+  assert.match(
+    String((result as { text: string }).text),
+    /^# Resume\n\n- \*\*Error\*\*: Session not found: `session-missing`\n- \*\*Note\*\*: Use `\/resume list` or `\/session list` to find resumable sessions\.$/
+  );
+});
+
 test("resume last aliases render source as last", async () => {
   const app = new App(makeConfig());
   const sessionMeta = {
