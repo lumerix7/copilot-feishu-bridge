@@ -694,14 +694,22 @@ export class App {
       if (resumeArgs.isEmpty() && !wantsLast) {
         return this.renderCommandError(
           "Resume",
-          "pick a session explicitly, or use `-` to resume the most recent session",
+          "pick a session explicitly, or use `-` to resume the saved last session",
           "`/resume [<session-id>|-|--last|-n <index>|list|-h]`"
+        );
+      }
+      const savedLastProject = wantsLast ? existing?.lastProject : undefined;
+      if (wantsLast && !resumeArgs.peek() && !existing?.lastCopilotSessionId) {
+        return this.renderCommandWarning(
+          "Resume",
+          "no last session is saved for this conversation",
+          "`/resume <session-id>` or `/resume list`",
+          ["- **Note**: Resume one session explicitly first; successful session switches save the previous session for `/resume -`."]
         );
       }
 
       if (wantsLast) {
-        const sessions = await this.listSessionsForDisplay(1, listProject);
-        targetSessionId = sessions[0]?.sessionId;
+        targetSessionId = existing?.lastCopilotSessionId;
         resumeSource = "last";
       } else if (resumeArgs.peek() === "-n") {
         resumeArgs.shift();
@@ -757,7 +765,7 @@ export class App {
       const sessionMeta = (await this.copilot.listSessions()).find((s) => s.sessionId === targetSessionId);
 
       // -C/--cd: only apply if it matches the session's own project
-      let resolvedProject = sessionMeta?.context?.cwd || currentProject;
+      let resolvedProject = sessionMeta?.context?.cwd || savedLastProject || currentProject;
       if (cdArg) {
         try {
           const requestedProject = await this.resolveProject(cdArg, currentProject);
@@ -1764,9 +1772,16 @@ export class App {
     defaults?: Partial<SessionBinding>
   ): SessionBinding {
     const now = new Date().toISOString();
+    const switchingSession =
+      Boolean(defaults?.copilotSessionId) &&
+      defaults?.copilotSessionId !== copilotSessionId;
     return {
       conversationKey,
       copilotSessionId,
+      lastCopilotSessionId: switchingSession
+        ? defaults?.copilotSessionId
+        : defaults?.lastCopilotSessionId,
+      lastProject: switchingSession ? defaults?.project : defaults?.lastProject,
       sessionTitle: defaults?.copilotSessionId === copilotSessionId ? defaults?.sessionTitle : undefined,
       project,
       searchEnabled: defaults?.searchEnabled ?? this.config.project.defaultSearchEnabled,
@@ -2461,7 +2476,7 @@ export class App {
       "",
       "#### Options",
       "",
-      "- `-, --last` Resume the most recent session in the current scope.",
+      "- `-, --last` Resume the saved last session for this conversation.",
       "- `-n <index>` Resume the Nth session from the current `/session list` ordering.",
       `- \`--messages <count>\` Append the last \`${this.config.copilot.resumeDefaultMessages}\` thread messages by default after a successful session change.`,
       "- `-C, --cd <dir>` Require the resumed session to stay in that project.",
@@ -2482,7 +2497,7 @@ export class App {
       "## Examples",
       "",
       "- `/resume <session-id>` - resume one specific session",
-      "- `/resume -` - resume the most recent session in the current scope"
+      "- `/resume -` - resume the saved last session for this conversation"
     ].join("\n");
   }
 
