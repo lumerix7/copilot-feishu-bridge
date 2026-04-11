@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { CopilotBackend, CopilotTurnOptions, CopilotTurnResult } from "../adapters/copilot/backend.js";
-import type { ModelInfo, SessionEvent } from '@github/copilot-sdk';import { createCopilotBackend } from "../adapters/copilot/copilot-runtime.js";
+import type { ModelInfo, SessionEvent, SessionMetadata } from "@github/copilot-sdk";
+import { createCopilotBackend } from "../adapters/copilot/copilot-runtime.js";
 import { FeishuGateway } from "../adapters/feishu/feishu-gateway.js";
 import { AppConfig } from "../config/env.js";
 import { conversationKeyFor } from "./conversation-key.js";
@@ -36,6 +37,12 @@ type AppResponse = {
   text: string;
   bodyFormat?: OutgoingBodyFormat;
   severity?: "warning" | "error";
+};
+
+type RecentSessionReplayMessage = {
+  role: "user" | "assistant";
+  text: string;
+  timestamp?: string;
 };
 
 class ArgCursor {
@@ -133,13 +140,15 @@ export class App {
           let queuedStreamingSnapshot: string | undefined;
           let streamDrain = Promise.resolve();
           const streamKey = `${message.chatId}:${message.threadId || "root"}:${message.messageId}:${commandName || "copilot"}`;
-          const sendStatusSafely = async (update: string): Promise<void> => {
+          const sendStatusSafely = async (update: string | AppResponse): Promise<void> => {
             statusChain = statusChain.then(async () => {
               try {
                 const latestBinding =
                   (await this.store.get(conversationKeyFor(message))) || currentBinding;
-                const formattedUpdate = formatForFeishu(update);
-                const copilotStatusHeading = !commandName
+                const updateText = typeof update === "string" ? update : update.text;
+                const updateBodyFormat = typeof update === "string" ? undefined : update.bodyFormat;
+                const formattedUpdate = updateBodyFormat ? updateText : formatForFeishu(updateText);
+                const copilotStatusHeading = !commandName && !updateBodyFormat
                   ? this.extractLeadingMarkdownHeading(formattedUpdate)
                   : undefined;
                 const statusTitle = copilotStatusHeading
@@ -166,7 +175,8 @@ export class App {
                   text: statusText,
                   replyToMessageId: message.messageId,
                   threadId: message.threadId,
-                  streaming: false
+                  streaming: false,
+                  bodyFormat: updateBodyFormat
                 });
               } catch (error) {
                 console.error("failed to send Feishu update", {
@@ -312,7 +322,7 @@ export class App {
   async handleIncoming(
     message: IncomingMessage,
     onUpdate?: (update: string) => Promise<void>,
-    onStatus?: (text: string) => Promise<void>
+    onStatus?: (text: string | AppResponse) => Promise<void>
   ): Promise<string | AppResponse> {
     if (message.chatType !== "p2p") {
       return "Only direct messages are supported right now.";
@@ -348,7 +358,7 @@ export class App {
         "- `/status [check-update] [-h|--help]` show current session and run state; `check-update` checks npm versions",
         "- `/new [-C <dir>] [-h|--help]` create and bind a fresh Copilot session",
         "- `/session [list [-n <count>] [--all] [--project <path>]] [--raw-markdown] [-h|--help]` show the current session or browse recent sessions",
-        "- `/resume [list|<session-id>|--last|-n <index>] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session",
+        "- `/resume [<session-id>|-|--last|-n <index>|list] [-h|--help]` resume a session",
         "- `/compact` compact the current bound Copilot session",
         "- `/stop` stop the current active run",
         "",
@@ -574,23 +584,68 @@ export class App {
         return `Cannot resume while run=${activeRun.runId} is ${activeRun.status}. Use /stop first.`;
       }
       const resumeArgs = new ArgCursor(command.args);
-      if (resumeArgs.peek() === "-h" || resumeArgs.peek() === "--help") {
+      if (resumeArgs.takeFlag("-h", "--help")) {
         return this.resumeHelpText();
       }
       const currentProject = existing?.project || this.config.project.defaultProject;
+      const cdArg = resumeArgs.takeOption("-C", "--cd");
+      if (cdArg === "") {
+        return this.renderCommandError(
+          "Resume",
+          "missing value for `-C|--cd <dir>`",
+          "`/resume [<session-id>|-|--last|-n <index>] [--messages <count>] [-C|--cd <dir>]`"
+        );
+      }
+      const messagesArg = resumeArgs.takeOption("--messages");
+      if (messagesArg === "") {
+        return this.renderCommandError(
+          "Resume",
+          "missing value for `--messages <count>`",
+          "`/resume [<session-id>|-|--last|-n <index>] [--messages <count>] [-C|--cd <dir>]`"
+        );
+      }
+      let replayMessages = this.config.copilot.resumeDefaultMessages;
+      if (messagesArg !== undefined) {
+        const parsed = Number.parseInt(messagesArg, 10);
+        if (!Number.isInteger(parsed) || parsed < 0) {
+          return this.renderCommandError(
+            "Resume",
+            "invalid `--messages <count>` value",
+            "`/resume [<session-id>|-|--last|-n <index>] [--messages <count>]`"
+          );
+        }
+        replayMessages = parsed;
+      }
 
-      // Parse scope/list options (may appear anywhere before or after selector)
+      const wantsList = resumeArgs.peek() === "list";
       const allProjects = resumeArgs.takeFlag("--all");
       const projectScopeArg = resumeArgs.takeOption("--project");
-      const cdArg = resumeArgs.takeOption("-C", "--cd");
-      const messagesArg = resumeArgs.takeOption("--messages");
-
+      if (projectScopeArg === "") {
+        return this.renderCommandError(
+          "Resume",
+          "missing value for `--project <path>`",
+          "`/resume list [--all] [--project <path>]`"
+        );
+      }
+      if (projectScopeArg && !wantsList) {
+        return this.renderCommandError(
+          "Resume",
+          "use `--project <path>` with `/resume list`, or use `-C|--cd <dir>` to switch project while resuming",
+          "`/resume list [--project <path>]`"
+        );
+      }
+      if (allProjects && !wantsList) {
+        return this.renderCommandError(
+          "Resume",
+          "use `--all` with `/resume list` to browse across projects, then resume by session id",
+          "`/resume list --all`"
+        );
+      }
       const scopedProject = projectScopeArg
         ? await this.resolveProject(projectScopeArg, currentProject)
         : currentProject;
       const listProject = allProjects ? undefined : scopedProject;
 
-      const wantsList = resumeArgs.peek() === "list";
       if (wantsList) {
         resumeArgs.shift();
       }
@@ -604,16 +659,47 @@ export class App {
       }
 
       let targetSessionId: string | undefined;
-      let resumeSource = "latest";
+      let resumeSource = "last";
       let resumeIndex: number | undefined;
 
-      if (resumeArgs.takeFlag("--last")) {
+      let wantsLast = false;
+      if (resumeArgs.peek() === "--last") {
+        resumeArgs.shift();
+        wantsLast = true;
+      }
+      if (resumeArgs.peek() === "-") {
+        resumeArgs.shift();
+        wantsLast = true;
+      }
+      if ((resumeArgs.peek() || "").startsWith("-") && resumeArgs.peek() !== "-n") {
+        return this.renderCommandError(
+          "Resume",
+          `unsupported bridge option \`${resumeArgs.peek()}\``,
+          "`/resume [<session-id>|-|--last|-n <index>|list]`"
+        );
+      }
+      if (resumeArgs.isEmpty() && !wantsLast) {
+        return this.renderCommandError(
+          "Resume",
+          "pick a session explicitly, or use `-` to resume the most recent session",
+          "`/resume [<session-id>|-|--last|-n <index>|list|-h]`"
+        );
+      }
+
+      if (wantsLast) {
         const sessions = await this.listSessionsForDisplay(1, listProject);
         targetSessionId = sessions[0]?.sessionId;
         resumeSource = "last";
       } else if (resumeArgs.peek() === "-n") {
         resumeArgs.shift();
         const rawIndex = resumeArgs.shift();
+        if (!resumeArgs.isEmpty()) {
+          return this.renderCommandError(
+            "Resume",
+            `unsupported resume argument \`${resumeArgs.peek()}\``,
+            "`/resume -n <index>`"
+          );
+        }
         const index = Number(rawIndex || "");
         if (!Number.isInteger(index) || index < 1) {
           return this.renderCommandError("Resume", "invalid resume index", "`/resume -n <index>`");
@@ -633,8 +719,11 @@ export class App {
         targetSessionId = resumeArgs.shift();
         resumeSource = "explicit";
       } else {
-        const sessions = await this.listSessionsForDisplay(1, listProject);
-        targetSessionId = sessions[0]?.sessionId || existing?.copilotSessionId;
+        return this.renderCommandError(
+          "Resume",
+          `unsupported resume argument \`${resumeArgs.peek()}\``,
+          "`/resume [<session-id>|-|--last|-n <index>|list]`"
+        );
       }
 
       if (!targetSessionId) {
@@ -667,36 +756,23 @@ export class App {
       // Probe model info in background so /status shows the real model before the first turn
       void this.copilot.probeSessionModelInfo(targetSessionId, resolvedProject).catch(() => {});
 
-      // --messages: fetch and append last N conversation turns (default from config)
-      const messageCount = messagesArg !== undefined
-        ? parseInt(messagesArg, 10)
-        : this.config.copilot.resumeDefaultMessages;
-      let messageLines: string[] = [];
-      if (Number.isFinite(messageCount) && messageCount > 0) {
-        const events = await this.copilot.getSessionMessages(targetSessionId);
-        const turns = this.extractMessageTurns(events, messageCount);
-        if (turns.length > 0) {
-          messageLines = ["", "---", "", `## Last ${turns.length} Message${turns.length === 1 ? "" : "s"}`, ""];
-          for (const turn of turns) {
-            messageLines.push(`**${turn.role}**: ${this.previewText(turn.content, 300)}`);
-          }
+      const sections = this.renderSessionDetailText({
+        title: "Resume Session",
+        sessionId: targetSessionId,
+        project: binding.project,
+        sessionMeta,
+        leadingLines: [
+          `- **Source**: \`${resumeSource}\``,
+          ...(resumeIndex ? [`- **Index**: \`${resumeIndex}\``] : [])
+        ]
+      });
+      if (replayMessages > 0 && onStatus) {
+        const recentMessages = await this.renderRecentSessionReplayMessages(targetSessionId, replayMessages);
+        for (const recentMessage of recentMessages) {
+          await onStatus(recentMessage);
         }
       }
-
-      const sections = [
-        "# Resume Session",
-        "",
-        `- **Source**: \`${resumeSource}\``,
-        ...(resumeIndex ? [`- **Index**: \`${resumeIndex}\``] : []),
-        `- **Session**: \`${targetSessionId}\``,
-        `- **Project**: \`${binding.project}\``,
-        `- **Time**: ${this.formatAnyTimestamp(sessionMeta?.startTime?.toISOString())}`,
-        `- **Cwd**: \`${sessionMeta?.context?.cwd || "(unknown)"}\``,
-        `- **Last message**: ${sessionMeta?.summary || "(no preview)"}`,
-        ...messageLines
-      ];
-
-      return sections.join("\n");
+      return sections;
     }
 
     if (command?.name === "session") {
@@ -772,16 +848,13 @@ export class App {
       const sessionMeta = (await this.copilot.listSessions()).find((s) => s.sessionId === existing.copilotSessionId);
       const sessionInfo = existing.copilotSessionId ? this.copilot.getSessionModelInfo(existing.copilotSessionId) : undefined;
       const project = existing.project || this.config.project.defaultProject;
-      return this.withBodyFormat([
-        "# Current Session",
-        "",
-        `- **Session**: \`${existing.copilotSessionId}\``,
-        `- **Project**: \`${project}\``,
-        ...(sessionInfo?.model ? [`- **Model**: \`${sessionInfo.model}\`${sessionInfo.reasoningEffort ? ` (effort: ${sessionInfo.reasoningEffort})` : ""}`] : []),
-        `- **Time**: ${this.formatAnyTimestamp(sessionMeta?.startTime?.toISOString())}`,
-        `- **Cwd**: \`${sessionMeta?.context?.cwd || "(unknown)"}\``,
-        `- **Last message**: ${sessionMeta?.summary || "(no preview)"}`
-      ].join("\n"), sessionBodyFormat);
+      return this.withBodyFormat(this.renderSessionDetailText({
+        title: "Current Session",
+        sessionId: existing.copilotSessionId,
+        project,
+        sessionMeta,
+        modelInfo: sessionInfo
+      }), sessionBodyFormat);
     }
 
     if (command?.name === "new") {
@@ -1494,16 +1567,89 @@ export class App {
     });
   }
 
-  private extractMessageTurns(events: SessionEvent[], count: number): { role: string; content: string }[] {
-    const turns: { role: string; content: string }[] = [];
+  private renderSessionDetailText(options: {
+    title: string;
+    sessionId: string;
+    project: string;
+    sessionMeta?: SessionMetadata;
+    modelInfo?: { model?: string; reasoningEffort?: string };
+    leadingLines?: string[];
+  }): string {
+    const { title, sessionId, project, sessionMeta, modelInfo, leadingLines = [] } = options;
+    const lastMessage = sessionMeta?.summary || "(no preview)";
+    return [
+      `# ${title}`,
+      "",
+      ...leadingLines,
+      ...(leadingLines.length > 0 ? [""] : []),
+      `- **Session**: \`${sessionId}\``,
+      `- **Project**: \`${project}\``,
+      ...(modelInfo?.model
+        ? [`- **Model**: \`${modelInfo.model}\`${modelInfo.reasoningEffort ? ` (effort: ${modelInfo.reasoningEffort})` : ""}`]
+        : []),
+      `- **Time**: ${this.formatAnyTimestamp(sessionMeta?.startTime?.toISOString())}`,
+      `- **Cwd**: \`${sessionMeta?.context?.cwd || "(unknown)"}\``,
+      "- **Last message**:",
+      "",
+      this.renderFencedBlock("text", lastMessage)
+    ].join("\n");
+  }
+
+  private async renderRecentSessionReplayMessages(
+    sessionId: string,
+    limit: number
+  ): Promise<AppResponse[]> {
+    if (limit < 1) return [];
+    const messages = await this.copilot.getSessionMessages(sessionId);
+    const replayMessages = this.extractRecentReplayMessages(messages, limit);
+    return replayMessages.map((message, index) => this.renderRecentSessionReplayMessage(message, index));
+  }
+
+  private extractRecentReplayMessages(
+    events: SessionEvent[],
+    limit: number
+  ): RecentSessionReplayMessage[] {
+    const messages: RecentSessionReplayMessage[] = [];
     for (const event of events) {
-      if (event.type === "user.message" && event.data?.content) {
-        turns.push({ role: "User", content: event.data.content });
-      } else if (event.type === "assistant.message" && event.data?.content) {
-        turns.push({ role: "Copilot", content: event.data.content });
+      if (event.type !== "user.message" && event.type !== "assistant.message") {
+        continue;
       }
+      const content = typeof event.data?.content === "string" ? event.data.content.trim() : "";
+      if (!content) continue;
+      const message: RecentSessionReplayMessage = {
+        role: event.type === "assistant.message" ? "assistant" : "user",
+        text: content
+      };
+      const rawTimestamp = (event as SessionEvent & { timestamp?: unknown }).timestamp;
+      if (typeof rawTimestamp === "string" && rawTimestamp.trim()) {
+        message.timestamp = rawTimestamp;
+      }
+      const previous = messages[messages.length - 1];
+      if (
+        previous &&
+        previous.role === message.role &&
+        previous.text === message.text &&
+        previous.timestamp === message.timestamp
+      ) {
+        continue;
+      }
+      messages.push(message);
     }
-    return turns.slice(-count);
+    return messages.slice(-limit);
+  }
+
+  private renderRecentSessionReplayMessage(
+    message: RecentSessionReplayMessage,
+    _index: number
+  ): AppResponse {
+    const title = message.role === "assistant" ? "[Copilot]" : "[User]";
+    const prefix = message.timestamp
+      ? `${title} ${this.formatAnyTimestamp(message.timestamp, message.timestamp)}`
+      : title;
+    return {
+      text: `${prefix}\n\n${message.text}`,
+      bodyFormat: "raw-text"
+    };
   }
 
   private previewText(value: string, maxLength = 120): string {
@@ -1979,28 +2125,38 @@ export class App {
     return [
       "# Resume",
       "",
-      "Resume a Copilot session.",
+      "Resume a session.",
       "",
       "## Usage",
       "",
-      "- `/resume [list|<session-id>|--last|-n <index>] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>]`",
-      "- `/resume -h|--help`",
+      "### `/resume <session-id>|[options]` - Resume a session.",
       "",
-      "## Options",
+      "- `<session-id>` Resume one specific session id.",
       "",
-      "**Select session**",
-      "- `<session-id>` — bind one specific session ID",
-      "- `--last` — bind the most recent session in the current scope",
-      "- `-n <index>` — bind the Nth session from the current `/session list` ordering",
+      "#### Options",
       "",
-      "**List scope**",
-      "- `list` — show the current resumable session list",
-      "- `--all` — expand browsing beyond the current project for `list`",
-      "- `--project <path>` — scope `list` browsing to one project path",
+      "- `-, --last` Resume the most recent session in the current scope.",
+      "- `-n <index>` Resume the Nth session from the current `/session list` ordering.",
+      `- \`--messages <count>\` Append the last \`${this.config.copilot.resumeDefaultMessages}\` thread messages by default after a successful session change.`,
+      "- `-C, --cd <dir>` Require the resumed session to stay in that project.",
       "",
-      "**Project**",
-      "- `-C, --cd <dir>` — keep the resumed session in that project only when it matches the session project",
-      "- `--messages <count>` — append the last N thread messages after a successful session change (default: 5, set 0 to disable)"
+      "### `/resume list [options]` - List resumable sessions.",
+      "",
+      "- `/resume list` Show resumable sessions instead of rebinding.",
+      "",
+      "#### Options",
+      "",
+      "- `--all` Expand list beyond the current project.",
+      "- `--project <path>` Scope list to one project path.",
+      "",
+      "### General",
+      "",
+      "- `-h, --help` Show resume help.",
+      "",
+      "## Examples",
+      "",
+      "- `/resume <session-id>` - resume one specific session",
+      "- `/resume -` - resume the most recent session in the current scope"
     ].join("\n");
   }
 
