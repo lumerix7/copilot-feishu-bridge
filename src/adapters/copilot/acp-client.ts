@@ -19,6 +19,48 @@ export interface SessionModelInfo {
   reasoningEffort?: string;
 }
 
+type CompactResult = { success: boolean; tokensRemoved: number; messagesRemoved: number };
+
+type SessionCompactRpcCompat = {
+  history?: {
+    compact?: () => Promise<CompactResult>;
+  };
+  compaction?: {
+    compact?: () => Promise<CompactResult>;
+  };
+};
+
+type SessionConnectionCompat = {
+  sendRequest?: (method: string, params: { sessionId: string }) => Promise<CompactResult>;
+};
+
+type SessionHistoryConnection = {
+  sessionId: string;
+  sendRequest: (method: string, params: { sessionId: string }) => Promise<CompactResult>;
+};
+
+function getSessionCompactRpc(session: CopilotSession): SessionCompactRpcCompat {
+  return session.rpc as SessionCompactRpcCompat;
+}
+
+function getSessionHistoryConnection(session: CopilotSession): SessionHistoryConnection | undefined {
+  const maybe = session as unknown as { sessionId?: unknown; connection?: SessionConnectionCompat };
+  if (typeof maybe.sessionId !== "string" || typeof maybe.connection?.sendRequest !== "function") {
+    return undefined;
+  }
+  return {
+    sessionId: maybe.sessionId,
+    sendRequest: maybe.connection.sendRequest.bind(maybe.connection),
+  };
+}
+
+function isUnsupportedMethodError(error: unknown, method: string): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message.includes(`Unhandled method ${method}`)
+    || error.message.includes(`Method not found: ${method}`)
+    || error.message.includes(`Unknown method ${method}`);
+}
+
 export class AcpClient {
   private client: CopilotClient | null = null;
   private sessions = new Map<string, CopilotSession>();
@@ -348,7 +390,26 @@ export class AcpClient {
 
   async compactSession(sessionId: string, workingDirectory?: string): Promise<{ success: boolean; tokensRemoved: number; messagesRemoved: number }> {
     const session = await this.getOrResumeSession(sessionId, workingDirectory);
-    return session.rpc.compaction.compact();
+    const historyConnection = getSessionHistoryConnection(session);
+    if (historyConnection) {
+      try {
+        return await historyConnection.sendRequest("session.history.compact", { sessionId: historyConnection.sessionId });
+      } catch (error) {
+        // Compatibility fallback: older SDK/runtime combinations surface
+        // "unsupported method" only via error text, so this branch depends on
+        // upstream wording remaining recognizable.
+        if (!isUnsupportedMethodError(error, "session.history.compact")) throw error;
+      }
+    }
+
+    const rpc = getSessionCompactRpc(session);
+    if (typeof rpc.history?.compact === "function") {
+      return rpc.history.compact();
+    }
+    if (typeof rpc.compaction?.compact === "function") {
+      return rpc.compaction.compact();
+    }
+    throw new Error("Session compaction RPC is unavailable.");
   }
 
   async getQuota(): Promise<number | undefined> {

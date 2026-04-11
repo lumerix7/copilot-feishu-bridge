@@ -56,3 +56,51 @@ test("renameSession waits briefly for title_changed after idle", async () => {
   assert.equal(title, "review-since-0404");
   assert.equal(client.getSessionTitle("session-1"), "review-since-0404");
 });
+
+test("compactSession uses session.history.compact through the raw ACP connection", async () => {
+  const client = new AcpClient() as any;
+  client.getOrResumeSession = async () => ({
+    sessionId: "session-1",
+    connection: {
+      async sendRequest(method: string, params: { sessionId: string }) {
+        assert.equal(method, "session.history.compact");
+        assert.deepEqual(params, { sessionId: "session-1" });
+        return { success: true, tokensRemoved: 12, messagesRemoved: 3 };
+      }
+    },
+    rpc: {
+      compaction: {
+        async compact() {
+          throw new Error("legacy fallback should not be used");
+        }
+      }
+    }
+  });
+
+  const result = await client.compactSession("session-1", "/tmp/project-a");
+
+  assert.deepEqual(result, { success: true, tokensRemoved: 12, messagesRemoved: 3 });
+});
+
+test("compactSession falls back to legacy session.compaction.compact when history RPC is unsupported", async () => {
+  const client = new AcpClient() as any;
+  client.getOrResumeSession = async () => ({
+    sessionId: "session-1",
+    connection: {
+      async sendRequest() {
+        throw new Error("Unhandled method session.history.compact");
+      }
+    },
+    rpc: {
+      compaction: {
+        async compact() {
+          return { success: true, tokensRemoved: 7, messagesRemoved: 2 };
+        }
+      }
+    }
+  });
+
+  const result = await client.compactSession("session-1", "/tmp/project-a");
+
+  assert.deepEqual(result, { success: true, tokensRemoved: 7, messagesRemoved: 2 });
+});

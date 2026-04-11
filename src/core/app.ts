@@ -900,7 +900,7 @@ export class App {
             "Copilot ACP could not rename this session.",
             undefined,
             [
-              `- **Details**: ${escapeMarkdownInline(message)}`,
+              ...this.sdkWarningDetailLines(error),
               "- **Note**: Use `/resume` first; some sessions cannot be renamed over ACP."
             ]
           );
@@ -1114,7 +1114,8 @@ export class App {
           `- **Messages removed**: \`${result.messagesRemoved}\``,
         ].join("\n");
       } catch (err) {
-        return this.renderCommandError("Compact", err instanceof Error ? err.message : String(err), "`/compact`");
+        const message = err instanceof Error ? err.message : String(err);
+        return this.renderCommandError("Compact", message, "`/compact`", [], "error");
       }
     }
 
@@ -1635,6 +1636,43 @@ export class App {
         ...extraLines
       ].join("\n")
     };
+  }
+
+  private sdkWarningDetailLines(error: unknown): string[] {
+    const maybe = error as { message?: unknown; code?: unknown; data?: unknown };
+    const detailLines: string[] = [];
+    const message = error instanceof Error
+      ? error.message
+      : typeof maybe.message === "string"
+        ? maybe.message
+        : String(error);
+    if (message.trim()) {
+      detailLines.push(`- **Details**: ${escapeMarkdownInline(message)}`);
+    }
+    if (typeof maybe.code === "number" || typeof maybe.code === "string") {
+      detailLines.push(`- **Code**: \`${String(maybe.code)}\``);
+    }
+    const sdkData = this.formatSdkErrorData(maybe.data);
+    if (sdkData) {
+      detailLines.push(`- **SDK data**: ${escapeMarkdownInline(sdkData)}`);
+    }
+    return detailLines;
+  }
+
+  private formatSdkErrorData(value: unknown): string | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      return trimmed || undefined;
+    }
+    try {
+      const compact = JSON.stringify(value);
+      if (!compact) return undefined;
+      return compact.length <= 500 ? compact : `${compact.slice(0, 497)}...`;
+    } catch {
+      const fallback = String(value).trim();
+      return fallback || undefined;
+    }
   }
 
   private stripLeadingMarkdownHeading(text: string): string {

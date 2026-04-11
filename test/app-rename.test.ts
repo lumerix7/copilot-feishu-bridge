@@ -307,6 +307,45 @@ test("rename returns a warning instead of a bridge error on ACP 400 failures", a
   assert.match(result?.text ?? "", /- \*\*Details\*\*: Execution failed: CAPIError: 400 400 Bad Request/);
 });
 
+test("rename warning includes structured SDK details when present", async () => {
+  const app = new App(makeConfig());
+  const store = (app as unknown as { store: { put: (value: unknown) => Promise<void> } }).store;
+  await store.put({
+    conversationKey: "p2p:chat_test",
+    copilotSessionId: "session-2",
+    project: "/tmp/project-a",
+    createdAt: "2026-04-09T00:00:00.000Z",
+    updatedAt: "2026-04-09T00:00:00.000Z"
+  });
+
+  (app as unknown as { copilot: unknown }).copilot = makeBackend({
+    onRename: async () => {
+      const error = new Error("Execution failed: CAPIError: 400 400 Bad Request(Request ID: test-request-id)");
+      Object.assign(error, {
+        code: -32001,
+        data: {
+          status: 400,
+          requestId: "test-request-id"
+        }
+      });
+      throw error;
+    }
+  });
+
+  const result = await app.handleIncoming({
+    chatId: "chat_test",
+    messageId: "msg_test",
+    chatType: "p2p",
+    text: "/rename 'Review changes'"
+  });
+
+  assert.equal(typeof result, "object");
+  assert.equal(result?.severity, "warning");
+  assert.match(result?.text ?? "", /- \*\*Details\*\*: Execution failed: CAPIError: 400 400 Bad Request\\\(Request ID: test-request-id\\\)/);
+  assert.match(result?.text ?? "", /- \*\*Code\*\*: `-32001`/);
+  assert.match(result?.text ?? "", /- \*\*SDK data\*\*: \\\{"status":400,"requestId":"test-request-id"\\\}/);
+});
+
 test("bound session title persists across restart for rename, session, and session list", async () => {
   const config = makeConfig();
   await fs.mkdir("/tmp/project-a", { recursive: true });

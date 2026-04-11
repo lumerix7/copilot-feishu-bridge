@@ -88,7 +88,7 @@ All commands are slash commands in a Feishu DM to the bot.
 - `/session [<session-id>|list [options]] [-h|--help]` show the current session, inspect a specific session, or browse recent sessions
 - `/resume [<session-id>|--last|-n <index>|--list] [--messages <count>] [--all] [--project <path>] [-C|--cd <dir>] [-h|--help]` resume a session
 - `/rename [--session <session-id>] ['name'|-- name] [-h|--help]` show or change a Copilot session title
-- `/compact` compact the current bound Copilot session
+- `/compact` compact the current bound Copilot session; see [docs/copilot-compaction.md](docs/copilot-compaction.md)
 - `/stop` stop the current active run
 
 `--raw-markdown` returns fenced source markdown for `/help` and `/session` instead of the normal rendered card body.
